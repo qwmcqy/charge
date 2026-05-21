@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase';
 
 interface ParkingStatus {
@@ -25,13 +25,24 @@ export default function UserDashboard() {
   const [departLoading, setDepartLoading] = useState(false);
   const [message, setMessage] = useState('');
 
+  const lastData = useRef({
+    order: null,
+    station: null,
+    parking: {
+      parked: null as boolean | null,
+      status: null as string | null
+    }
+  });
+
   const loadData = useCallback(async () => {
     try {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setLoading(false); return; }
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
-      // Query for active orders: charging, paused, or recently completed
       const { data: orderData } = await supabase
         .from('charging_orders')
         .select('*')
@@ -41,46 +52,69 @@ export default function UserDashboard() {
         .limit(1)
         .maybeSingle();
 
-      if (orderData) {
-        setOrder(orderData);
+      let newOrder = orderData;
+      let newStation = null;
+      let newParking = null;
 
-        // Load station data
+      if (orderData) {
         if (orderData.station_id) {
           const { data: stationData } = await supabase
             .from('charging_stations')
             .select('*')
             .eq('id', orderData.station_id)
             .single();
-          setStation(stationData);
+          newStation = stationData;
         }
 
-        // For completed orders, check parking status
         if (orderData.status === 'completed') {
           try {
             const res = await fetch(`/api/charging/${orderData.id}/parking-status`);
             const pData = await res.json();
             if (res.ok) {
-              setParking(pData);
-              // If already departed/paid, treat as fully done — clear dashboard
-              if (pData.status === 'departed' || pData.status === 'paid' || !pData.parked) {
-                setOrder(null);
-                setStation(null);
-                setParking(null);
+              newParking = pData;
+              if (pData && pData.status === 'departed') {
+                newOrder = null;
+                newStation = null;
+                newParking = null;
               }
             }
-          } catch {
-            setParking(null);
-          }
-        } else {
-          setParking(null);
+          } catch {}
         }
-      } else {
-        setOrder(null);
-        setStation(null);
-        setParking(null);
       }
+
+      const isStatusChanged = () => {
+        if ((!lastData.current.order && newOrder) || (lastData.current.order && !newOrder)) {
+          return true;
+        }
+        if (newOrder && lastData.current.order) {
+          if (newOrder.status !== lastData.current.order?.status) {
+            return true;
+          }
+        }
+        if (
+          newParking?.parked !== lastData.current.parking.parked ||
+          newParking?.status !== lastData.current.parking.status
+        ) {
+          return true;
+        }
+        return false;
+      };
+
+      if (isStatusChanged()) {
+        setOrder(newOrder);
+        setStation(newStation);
+        setParking(newParking);
+        lastData.current = {
+          order: newOrder,
+          station: newStation,
+          parking: {
+            parked: newParking?.parked ?? null,
+            status: newParking?.status ?? null
+          }
+        };
+      }
+
     } catch {
-      // Supabase unavailable
     } finally {
       setLoading(false);
     }
@@ -88,12 +122,19 @@ export default function UserDashboard() {
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(() => {
-      loadData();
-      // Drive simulation tick
+
+    const simulateTimer = setInterval(() => {
       fetch('/api/charging/simulate', { method: 'POST' }).catch(() => {});
     }, 2000);
-    return () => clearInterval(interval);
+
+    const dataTimer = setInterval(() => {
+      loadData();
+    }, 5000);
+
+    return () => {
+      clearInterval(simulateTimer);
+      clearInterval(dataTimer);
+    };
   }, [loadData]);
 
   async function handleAction(action: 'pause' | 'resume' | 'end') {
@@ -164,6 +205,11 @@ export default function UserDashboard() {
       setParking(null);
       setOrder(null);
       setStation(null);
+      lastData.current = {
+        order: null,
+        station: null,
+        parking: { parked: null, status: null }
+      };
       setTimeout(() => setMessage(''), 5000);
     } catch (err: any) {
       setMessage(err.message || '操作失败');
@@ -176,12 +222,11 @@ export default function UserDashboard() {
     return <div className="flex items-center justify-center p-12"><div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" /></div>;
   }
 
-  // ====== STATE: No active order ======
   if (!order) {
     return (
       <div>
         <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
-        <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
+        <p className="text-xs text-gray-400 mb-6">数据每5秒自动刷新</p>
 
         {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
 
@@ -197,7 +242,6 @@ export default function UserDashboard() {
     );
   }
 
-  // Calculate battery progress (for charging/paused states)
   let batteryLevel = 0;
   let durationMinutes = 0;
   let estimatedRemainingMinutes = 0;
@@ -220,16 +264,14 @@ export default function UserDashboard() {
     batteryLevel = order.target_battery_level;
   }
 
-  // ====== STATE: Completed - awaiting departure ======
   if (order.status === 'completed' && parking?.parked) {
     return (
       <div>
         <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
-        <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
+        <p className="text-xs text-gray-400 mb-6">数据每5秒自动刷新</p>
 
         {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
 
-        {/* Charging complete banner */}
         <div className={`rounded-xl p-6 mb-6 ${parking.isOvertime ? 'bg-red-50 border-2 border-red-300' : 'bg-green-50 border-2 border-green-300'}`}>
           <div className="text-center mb-4">
             <div className="text-4xl mb-2">{parking.isOvertime ? '⏰' : '✅'}</div>
@@ -241,7 +283,6 @@ export default function UserDashboard() {
             </p>
           </div>
 
-          {/* Parking timer */}
           <div className="bg-white rounded-lg p-4 max-w-md mx-auto">
             <p className="text-sm text-gray-500 mb-2 text-center">停车计时中</p>
             <div className="grid grid-cols-3 gap-3 text-center">
@@ -275,7 +316,6 @@ export default function UserDashboard() {
           </div>
         </div>
 
-        {/* Order summary */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[
             { label: '充电桩编号', value: station?.station_number || '—' },
@@ -289,7 +329,6 @@ export default function UserDashboard() {
           ))}
         </div>
 
-        {/* Depart button */}
         <button onClick={handleDepart} disabled={departLoading}
           className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-medium text-lg hover:bg-blue-700 disabled:opacity-50 transition">
           {departLoading ? '处理中...' : '🚗 已离开（结束停车计时并生成账单）'}
@@ -301,22 +340,19 @@ export default function UserDashboard() {
     );
   }
 
-  // ====== STATE: Charging or Paused ======
   return (
     <div>
       <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
-      <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
+      <p className="text-xs text-gray-400 mb-6">数据每5秒自动刷新</p>
 
       {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
 
-      {/* Paused banner */}
       {order.status === 'paused' && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-yellow-700 text-sm font-medium mb-4">
           充电已暂停 — 点击"恢复充电"继续
         </div>
       )}
 
-      {/* Metrics cards */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
           { label: '电压', value: station?.current_voltage ? `${station.current_voltage.toFixed(0)} V` : '—', color: 'text-blue-600' },
@@ -331,7 +367,6 @@ export default function UserDashboard() {
         ))}
       </div>
 
-      {/* Progress bar */}
       <div className="bg-white rounded-xl shadow p-6 mb-6">
         <div className="flex justify-between items-center mb-3">
           <h3 className="font-semibold">充电进度</h3>
@@ -346,7 +381,6 @@ export default function UserDashboard() {
         </p>
       </div>
 
-      {/* Info cards */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         {[
           { label: '充电桩编号', value: station?.station_number || '分配中...' },
@@ -360,7 +394,6 @@ export default function UserDashboard() {
         ))}
       </div>
 
-      {/* Action buttons */}
       {order.status === 'charging' && (
         <div className="flex gap-4">
           <button onClick={() => handleAction('pause')} disabled={actionLoading}
