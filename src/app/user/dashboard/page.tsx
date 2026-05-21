@@ -24,25 +24,37 @@ export default function UserDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [departLoading, setDepartLoading] = useState(false);
   const [message, setMessage] = useState('');
-
-  const lastData = useRef({
+  
+  // 新增：缓存上一次的状态，用于对比是否真的变化
+  const lastStateRef = useRef({
     order: null,
     station: null,
-    parking: {
-      parked: null as boolean | null,
-      status: null as string | null
-    }
+    parking: null
   });
+  // 新增：异步锁，防止重复查询
+  const isFetchingRef = useRef(false);
 
   const loadData = useCallback(async () => {
+    // 防止前一次查询未完成就发起新查询
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
     try {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      if (!user) { 
+        // 只有缓存状态有值时才更新，避免无意义重渲染
+        if (lastStateRef.current.order !== null) {
+          setOrder(null);
+          setStation(null);
+          setParking(null);
+          lastStateRef.current = { order: null, station: null, parking: null };
+        }
         setLoading(false);
         return;
       }
 
+      // Query for active orders: charging, paused, or recently completed
       const { data: orderData } = await supabase
         .from('charging_orders')
         .select('*')
@@ -52,11 +64,14 @@ export default function UserDashboard() {
         .limit(1)
         .maybeSingle();
 
-      let newOrder = orderData;
+      let newOrder = null;
       let newStation = null;
       let newParking = null;
 
       if (orderData) {
+        newOrder = orderData;
+
+        // Load station data
         if (orderData.station_id) {
           const { data: stationData } = await supabase
             .from('charging_stations')
@@ -66,75 +81,73 @@ export default function UserDashboard() {
           newStation = stationData;
         }
 
+        // For completed orders, check parking status
         if (orderData.status === 'completed') {
           try {
             const res = await fetch(`/api/charging/${orderData.id}/parking-status`);
             const pData = await res.json();
             if (res.ok) {
               newParking = pData;
-              if (pData && pData.status === 'departed') {
+              // 优化：仅当明确标记为已离开/已支付时才清空，避免频繁切换
+              // 增加判断：只有 parking 状态有效时才清空，防止接口返回异常导致的闪动
+              if (pData && (pData.status === 'departed' || pData.status === 'paid' || !pData.parked)) {
                 newOrder = null;
                 newStation = null;
                 newParking = null;
               }
             }
-          } catch {}
+          } catch {
+            newParking = null;
+            // 异常时保留订单状态，避免清空导致闪动
+            newOrder = orderData;
+          }
+        } else {
+          newParking = null;
         }
+      } else {
+        newOrder = null;
+        newStation = null;
+        newParking = null;
       }
 
-      const isStatusChanged = () => {
-        if ((!lastData.current.order && newOrder) || (lastData.current.order && !newOrder)) {
-          return true;
-        }
-        if (newOrder && lastData.current.order) {
-          if (newOrder.status !== lastData.current.order?.status) {
-            return true;
-          }
-        }
-        if (
-          newParking?.parked !== lastData.current.parking.parked ||
-          newParking?.status !== lastData.current.parking.status
-        ) {
-          return true;
-        }
-        return false;
-      };
+      // 核心：只有状态真的变化时才更新，避免无意义重渲染
+      const stateChanged = 
+        JSON.stringify(lastStateRef.current.order) !== JSON.stringify(newOrder) ||
+        JSON.stringify(lastStateRef.current.station) !== JSON.stringify(newStation) ||
+        JSON.stringify(lastStateRef.current.parking) !== JSON.stringify(newParking);
 
-      if (isStatusChanged()) {
+      if (stateChanged) {
         setOrder(newOrder);
         setStation(newStation);
         setParking(newParking);
-        lastData.current = {
+        // 更新缓存
+        lastStateRef.current = {
           order: newOrder,
           station: newStation,
-          parking: {
-            parked: newParking?.parked ?? null,
-            status: newParking?.status ?? null
-          }
+          parking: newParking
         };
       }
-
-    } catch {
+    } catch (err) {
+      console.error('Load data error:', err);
+      // 出错时保留上一次状态，避免清空导致闪动
     } finally {
       setLoading(false);
+      isFetchingRef.current = false; // 释放异步锁
     }
   }, []);
 
   useEffect(() => {
+    // 初始化加载
     loadData();
-
-    const simulateTimer = setInterval(() => {
+    
+    // 优化定时器：保留2秒刷新，但通过缓存减少状态更新
+    const interval = setInterval(() => {
+      loadData();
+      // Drive simulation tick - 不影响页面状态，保留
       fetch('/api/charging/simulate', { method: 'POST' }).catch(() => {});
     }, 2000);
-
-    const dataTimer = setInterval(() => {
-      loadData();
-    }, 5000);
-
-    return () => {
-      clearInterval(simulateTimer);
-      clearInterval(dataTimer);
-    };
+    
+    return () => clearInterval(interval);
   }, [loadData]);
 
   async function handleAction(action: 'pause' | 'resume' | 'end') {
@@ -169,6 +182,7 @@ export default function UserDashboard() {
         setMessage('充电已恢复');
       }
 
+      // 操作后强制刷新，但仍会通过缓存判断是否更新状态
       loadData();
       setTimeout(() => setMessage(''), 3000);
     } catch (err: any) {
@@ -202,14 +216,11 @@ export default function UserDashboard() {
         : '，未超时无需停车费';
 
       setMessage(`已离开！账单已生成（合计 ¥${result.totalAmount.toFixed(2)}${overtimeInfo}）`);
+      // 手动清空状态并更新缓存
       setParking(null);
       setOrder(null);
       setStation(null);
-      lastData.current = {
-        order: null,
-        station: null,
-        parking: { parked: null, status: null }
-      };
+      lastStateRef.current = { order: null, station: null, parking: null };
       setTimeout(() => setMessage(''), 5000);
     } catch (err: any) {
       setMessage(err.message || '操作失败');
@@ -222,11 +233,12 @@ export default function UserDashboard() {
     return <div className="flex items-center justify-center p-12"><div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" /></div>;
   }
 
+  // ====== STATE: No active order ======
   if (!order) {
     return (
       <div>
         <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
-        <p className="text-xs text-gray-400 mb-6">数据每5秒自动刷新</p>
+        <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
 
         {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
 
@@ -242,6 +254,7 @@ export default function UserDashboard() {
     );
   }
 
+  // Calculate battery progress (for charging/paused states)
   let batteryLevel = 0;
   let durationMinutes = 0;
   let estimatedRemainingMinutes = 0;
@@ -264,14 +277,16 @@ export default function UserDashboard() {
     batteryLevel = order.target_battery_level;
   }
 
+  // ====== STATE: Completed - awaiting departure ======
   if (order.status === 'completed' && parking?.parked) {
     return (
       <div>
         <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
-        <p className="text-xs text-gray-400 mb-6">数据每5秒自动刷新</p>
+        <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
 
         {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
 
+        {/* Charging complete banner */}
         <div className={`rounded-xl p-6 mb-6 ${parking.isOvertime ? 'bg-red-50 border-2 border-red-300' : 'bg-green-50 border-2 border-green-300'}`}>
           <div className="text-center mb-4">
             <div className="text-4xl mb-2">{parking.isOvertime ? '⏰' : '✅'}</div>
@@ -283,6 +298,7 @@ export default function UserDashboard() {
             </p>
           </div>
 
+          {/* Parking timer */}
           <div className="bg-white rounded-lg p-4 max-w-md mx-auto">
             <p className="text-sm text-gray-500 mb-2 text-center">停车计时中</p>
             <div className="grid grid-cols-3 gap-3 text-center">
@@ -316,6 +332,7 @@ export default function UserDashboard() {
           </div>
         </div>
 
+        {/* Order summary */}
         <div className="grid grid-cols-3 gap-4 mb-6">
           {[
             { label: '充电桩编号', value: station?.station_number || '—' },
@@ -329,6 +346,7 @@ export default function UserDashboard() {
           ))}
         </div>
 
+        {/* Depart button */}
         <button onClick={handleDepart} disabled={departLoading}
           className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-medium text-lg hover:bg-blue-700 disabled:opacity-50 transition">
           {departLoading ? '处理中...' : '🚗 已离开（结束停车计时并生成账单）'}
@@ -340,19 +358,22 @@ export default function UserDashboard() {
     );
   }
 
+  // ====== STATE: Charging or Paused ======
   return (
     <div>
       <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
-      <p className="text-xs text-gray-400 mb-6">数据每5秒自动刷新</p>
+      <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
 
       {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
 
+      {/* Paused banner */}
       {order.status === 'paused' && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-yellow-700 text-sm font-medium mb-4">
           充电已暂停 — 点击"恢复充电"继续
         </div>
       )}
 
+      {/* Metrics cards */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         {[
           { label: '电压', value: station?.current_voltage ? `${station.current_voltage.toFixed(0)} V` : '—', color: 'text-blue-600' },
@@ -367,6 +388,7 @@ export default function UserDashboard() {
         ))}
       </div>
 
+      {/* Progress bar */}
       <div className="bg-white rounded-xl shadow p-6 mb-6">
         <div className="flex justify-between items-center mb-3">
           <h3 className="font-semibold">充电进度</h3>
@@ -381,6 +403,7 @@ export default function UserDashboard() {
         </p>
       </div>
 
+      {/* Info cards */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         {[
           { label: '充电桩编号', value: station?.station_number || '分配中...' },
@@ -394,6 +417,7 @@ export default function UserDashboard() {
         ))}
       </div>
 
+      {/* Action buttons */}
       {order.status === 'charging' && (
         <div className="flex gap-4">
           <button onClick={() => handleAction('pause')} disabled={actionLoading}
