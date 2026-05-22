@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase';
 
 interface ParkingStatus {
@@ -24,12 +24,30 @@ export default function UserDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [departLoading, setDepartLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const lastStateRef = useRef({
+    order: null,
+    station: null,
+    parking: null,
+  });
+  const isFetchingRef = useRef(false);
 
   const loadData = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
     try {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setLoading(false); return; }
+      if (!user) {
+        if (lastStateRef.current.order !== null) {
+          setOrder(null);
+          setStation(null);
+          setParking(null);
+          lastStateRef.current = { order: null, station: null, parking: null };
+        }
+        setLoading(false);
+        return;
+      }
 
       // Query for active orders: charging, paused, or recently completed
       const { data: orderData } = await supabase
@@ -41,8 +59,12 @@ export default function UserDashboard() {
         .limit(1)
         .maybeSingle();
 
+      let newOrder = null;
+      let newStation = null;
+      let newParking = null;
+
       if (orderData) {
-        setOrder(orderData);
+        newOrder = orderData;
 
         // Load station data
         if (orderData.station_id) {
@@ -51,7 +73,7 @@ export default function UserDashboard() {
             .select('*')
             .eq('id', orderData.station_id)
             .single();
-          setStation(stationData);
+          newStation = stationData;
         }
 
         // For completed orders, check parking status
@@ -60,29 +82,46 @@ export default function UserDashboard() {
             const res = await fetch(`/api/charging/${orderData.id}/parking-status`);
             const pData = await res.json();
             if (res.ok) {
-              setParking(pData);
-              // If already departed/paid, treat as fully done — clear dashboard
-              if (pData.status === 'departed' || pData.status === 'paid' || !pData.parked) {
-                setOrder(null);
-                setStation(null);
-                setParking(null);
+              newParking = pData;
+              if (pData && (pData.status === 'departed' || pData.status === 'paid' || !pData.parked)) {
+                newOrder = null;
+                newStation = null;
+                newParking = null;
               }
             }
           } catch {
-            setParking(null);
+            newParking = null;
+            newOrder = orderData;
           }
         } else {
-          setParking(null);
+          newParking = null;
         }
       } else {
-        setOrder(null);
-        setStation(null);
-        setParking(null);
+        newOrder = null;
+        newStation = null;
+        newParking = null;
       }
-    } catch {
-      // Supabase unavailable
+
+      const stateChanged =
+        JSON.stringify(lastStateRef.current.order) !== JSON.stringify(newOrder) ||
+        JSON.stringify(lastStateRef.current.station) !== JSON.stringify(newStation) ||
+        JSON.stringify(lastStateRef.current.parking) !== JSON.stringify(newParking);
+
+      if (stateChanged) {
+        setOrder(newOrder);
+        setStation(newStation);
+        setParking(newParking);
+        lastStateRef.current = {
+          order: newOrder,
+          station: newStation,
+          parking: newParking,
+        };
+      }
+    } catch (err) {
+      console.error('Load data error:', err);
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   }, []);
 
@@ -164,6 +203,7 @@ export default function UserDashboard() {
       setParking(null);
       setOrder(null);
       setStation(null);
+      lastStateRef.current = { order: null, station: null, parking: null };
       setTimeout(() => setMessage(''), 5000);
     } catch (err: any) {
       setMessage(err.message || '操作失败');
