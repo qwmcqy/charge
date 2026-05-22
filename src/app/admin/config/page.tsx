@@ -27,21 +27,10 @@ export default function ConfigPage() {
 
   async function loadConfig() {
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from('system_configs')
-        .select('*');
-
-      if (error) throw error;
-
-      const cfg: Record<string, any> = { ...defaultConfig };
-      if (data) {
-        for (const row of data) {
-          cfg[row.key] = typeof row.value === 'object' && row.value !== null
-            ? (row.value as any).v ?? row.value
-            : row.value;
-        }
-      }
+      const res = await fetch('/api/admin/config');
+      if (!res.ok) throw new Error('加载失败');
+      const data = await res.json();
+      const cfg: Record<string, any> = { ...defaultConfig, ...data };
       setConfig(cfg);
     } catch {
       setConfig({ ...defaultConfig });
@@ -58,25 +47,18 @@ export default function ConfigPage() {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
 
-      const entries = Object.entries(config).map(([key, value]) => ({
-        key,
-        value: { v: value },
-        updated_by: user?.id,
-      }));
+      const res = await fetch('/api/admin/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config, adminId: user?.id }),
+      });
 
-      for (const entry of entries) {
-        await supabase
-          .from('system_configs')
-          .upsert({
-            key: entry.key,
-            value: entry.value,
-            updated_by: entry.updated_by,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: 'key' });
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '保存失败');
 
       setMessage('配置已保存到数据库');
       setTimeout(() => setMessage(''), 3000);
+      loadConfig();
     } catch (err: any) {
       setMessage('保存失败: ' + err.message);
     } finally {

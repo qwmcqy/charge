@@ -37,9 +37,25 @@ export class ParkingFeeOrder {
   static async create(
     chargingOrderId: string,
     chargeCompleteTime: Date,
-    rate: number = DEFAULT_SYSTEM_CONFIG.parkingRatePerMinute,
-    grace: number = DEFAULT_SYSTEM_CONFIG.parkingGracePeriodMinutes
+    rate?: number,
+    grace?: number
   ): Promise<ParkingFeeOrder> {
+    // 从数据库读取实际配置（优先于硬编码默认值）
+    if (rate === undefined || grace === undefined) {
+      const { data: configs } = await supabase
+        .from('system_configs')
+        .select('*');
+      if (configs) {
+        for (const row of configs) {
+          const v = (row as any).value?.v;
+          if ((row as any).key === 'parkingRatePerMinute' && rate === undefined) rate = v ?? DEFAULT_SYSTEM_CONFIG.parkingRatePerMinute;
+          if ((row as any).key === 'parkingGracePeriodMinutes' && grace === undefined) grace = v ?? DEFAULT_SYSTEM_CONFIG.parkingGracePeriodMinutes;
+        }
+      }
+    }
+    rate ??= DEFAULT_SYSTEM_CONFIG.parkingRatePerMinute;
+    grace ??= DEFAULT_SYSTEM_CONFIG.parkingGracePeriodMinutes;
+
     const { data: order } = await supabase
       .from('charging_orders')
       .select('*')

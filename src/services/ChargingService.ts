@@ -5,7 +5,8 @@ import { ChargingOrder } from '@/models/ChargingOrder';
 import { QueueService } from './QueueService';
 import { FaultService } from './FaultService';
 import { ParkingFeeOrder as ParkingFeeOrderModel } from '@/models/ParkingFeeOrder';
-import { OrderStatus, ChargeMode } from '@/lib/types';
+import { OrderStatus, ChargeMode, NotificationType } from '@/lib/types';
+import { Notification } from '@/models/Notification';
 import { SIMULATION } from '@/lib/constants';
 
 const supabase = createServiceClient();
@@ -97,6 +98,16 @@ export class ChargingService {
     if (fault) {
       fault.affectedOrderId = order.id;
       await fault.report();
+
+      // 通知用户故障
+      await Notification.send(
+        order.userId,
+        NotificationType.System,
+        '充电异常终止',
+        `您的充电因${fault.description}已自动停止。故障ID: ${fault.id?.slice(0, 8)}`,
+        order.id
+      );
+
       await order.endCharging(OrderStatus.FaultStopped);
       QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
       return { order, station, fault, stopped: true };

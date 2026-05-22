@@ -23,6 +23,7 @@ export default function UserDashboard() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [departLoading, setDepartLoading] = useState(false);
+  const [faultLoading, setFaultLoading] = useState(false);
   const [message, setMessage] = useState('');
   
   // 新增：缓存上一次的状态，用于对比是否真的变化
@@ -229,6 +230,38 @@ export default function UserDashboard() {
     }
   }
 
+  async function handleSimulateFault() {
+    if (!order) return;
+    setFaultLoading(true);
+    setMessage('');
+
+    try {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('请先登录');
+
+      const res = await fetch(`/api/charging/${order.id}/simulate-fault`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const result = await res.json();
+
+      if (!res.ok) throw new Error(result.error || '操作失败');
+
+      setMessage('模拟故障已触发！充电已停止，请查看通知');
+      setOrder(null);
+      setStation(null);
+      setParking(null);
+      lastStateRef.current = { order: null, station: null, parking: null };
+      setTimeout(() => setMessage(''), 5000);
+    } catch (err: any) {
+      setMessage(err.message || '操作失败');
+    } finally {
+      setFaultLoading(false);
+    }
+  }
+
   if (loading) {
     return <div className="flex items-center justify-center p-12"><div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" /></div>;
   }
@@ -419,14 +452,18 @@ export default function UserDashboard() {
 
       {/* Action buttons */}
       {order.status === 'charging' && (
-        <div className="flex gap-4">
-          <button onClick={() => handleAction('pause')} disabled={actionLoading}
+        <div className="flex gap-4 flex-wrap">
+          <button onClick={() => handleAction('pause')} disabled={actionLoading || faultLoading}
             className="px-6 py-2.5 bg-yellow-500 text-white rounded-lg font-medium hover:bg-yellow-600 disabled:opacity-50 transition">
             {actionLoading ? '处理中...' : '暂停充电'}
           </button>
-          <button onClick={() => handleAction('end')} disabled={actionLoading}
+          <button onClick={() => handleAction('end')} disabled={actionLoading || faultLoading}
             className="px-6 py-2.5 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50 transition">
             {actionLoading ? '处理中...' : '结束充电'}
+          </button>
+          <button onClick={handleSimulateFault} disabled={faultLoading || actionLoading}
+            className="px-6 py-2.5 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 disabled:opacity-50 transition">
+            {faultLoading ? '故障触发中...' : '⚡ 模拟故障'}
           </button>
           {estimatedRemainingMinutes > 0 && (
             <span className="self-center text-sm text-gray-500">
@@ -437,14 +474,18 @@ export default function UserDashboard() {
       )}
 
       {order.status === 'paused' && (
-        <div className="flex gap-4">
-          <button onClick={() => handleAction('resume')} disabled={actionLoading}
+        <div className="flex gap-4 flex-wrap">
+          <button onClick={() => handleAction('resume')} disabled={actionLoading || faultLoading}
             className="px-6 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 transition">
             {actionLoading ? '处理中...' : '恢复充电'}
           </button>
-          <button onClick={() => handleAction('end')} disabled={actionLoading}
+          <button onClick={() => handleAction('end')} disabled={actionLoading || faultLoading}
             className="px-6 py-2.5 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50 transition">
             {actionLoading ? '处理中...' : '结束充电'}
+          </button>
+          <button onClick={handleSimulateFault} disabled={faultLoading || actionLoading}
+            className="px-6 py-2.5 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 disabled:opacity-50 transition">
+            {faultLoading ? '故障触发中...' : '⚡ 模拟故障'}
           </button>
         </div>
       )}

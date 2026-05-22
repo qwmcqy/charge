@@ -19,13 +19,13 @@ export const FAULT_THRESHOLDS = {
   minVoltage: 200,          // 最低电压(V)
   maxVoltage: 450,          // 最高电压(V)
   maxCurrent: 250,          // 最大电流(A) - 快充
-  maxCurrentSlow: 32,       // 最大电流(A) - 慢充
+  maxCurrentSlow: 36,       // 最大电流(A) - 慢充
 };
 
 export const SIMULATION = {
   voltageNominal: 400,       // 标称电压(V)
   currentFastNominal: 150,   // 快充标称电流(A) — 提速
-  currentSlowNominal: 32,    // 慢充标称电流(A) — 提速
+  currentSlowNominal: 28,    // 慢充标称电流(A) — 留安全裕度
   powerFactor: 0.95,         // 功率因数
   dataReportIntervalMs: 3000, // 数据上报间隔(ms)
   chargingSpeedFast: 12.0,   // 快充速度(%/分钟) — 5x提速

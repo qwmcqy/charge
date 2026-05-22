@@ -50,18 +50,16 @@ export default function FaultsPage() {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
 
-      const { error } = await supabase
-        .from('faults')
-        .update({
-          resolved_at: new Date().toISOString(),
-          handler_id: user?.id,
-          resolution: resolution.trim(),
-        })
-        .eq('id', id);
+      const res = await fetch(`/api/admin/faults/${id}/handle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminId: user?.id, resolution: resolution.trim() }),
+      });
 
-      if (error) throw error;
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || '处理失败');
 
-      setFaults(prev => prev.map(f => f.id === id ? { ...f, status: 'resolved', resolved_at: new Date().toISOString(), resolution: resolution.trim() } : f));
+      setFaults(prev => prev.map(f => f.id === id ? { ...f, resolved_at: new Date().toISOString(), resolution: resolution.trim() } : f));
       setHandleId(null);
       setResolution('');
       setMessage('故障已处理');

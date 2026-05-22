@@ -15,6 +15,7 @@ export async function POST(
     }
 
     const fault = await FaultService.handleFault(id, adminId, resolution);
+    await FaultService.resolveFault(id);
     return NextResponse.json({ success: true, fault });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 400 });
