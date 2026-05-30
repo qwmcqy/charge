@@ -64,7 +64,13 @@ export class Fault {
     // 标记充电桩为故障状态
     await supabase
       .from('charging_stations')
-      .update({ status: 'fault' })
+      .update({
+        status: 'fault',
+        current_order_id: null,
+        current_voltage: 0,
+        current_current: 0,
+        current_power: 0,
+      })
       .eq('id', this.stationId);
 
     // 如果有受影响的订单，停止充电
@@ -103,6 +109,12 @@ export class Fault {
   async resolve(): Promise<void> {
     this.resolvedAt = new Date();
 
+    const { data: station } = await supabase
+      .from('charging_stations')
+      .select('mode')
+      .eq('id', this.stationId)
+      .single();
+
     await supabase
       .from('faults')
       .update({ resolved_at: this.resolvedAt.toISOString() })
@@ -110,8 +122,19 @@ export class Fault {
 
     await supabase
       .from('charging_stations')
-      .update({ status: 'available', current_order_id: null })
+      .update({
+        status: 'available',
+        current_order_id: null,
+        current_voltage: 0,
+        current_current: 0,
+        current_power: 0,
+      })
       .eq('id', this.stationId);
+
+    if (station?.mode) {
+      const { QueueService } = await import('@/services/QueueService');
+      await QueueService.rebalanceStationQueues(station.mode);
+    }
   }
 
   async notifyAdmin(): Promise<void> {

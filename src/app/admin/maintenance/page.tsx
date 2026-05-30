@@ -17,7 +17,7 @@ export default function MaintenancePage() {
       const supabase = createClient();
       const { data } = await supabase
         .from('charging_stations')
-        .select('station_number')
+        .select('id, station_number')
         .order('station_number');
       setStations(data || []);
     } catch { /* ignore */ }
@@ -42,7 +42,7 @@ export default function MaintenancePage() {
   }
 
   const filteredLogs = stationFilter
-    ? logs.filter((l: any) => l.station_id && stations.find(s => s.station_number === stationFilter))
+    ? logs.filter((log: any) => log.station_id === stations.find(s => s.station_number === stationFilter)?.id)
     : logs;
 
   async function handleArchive() {
@@ -150,7 +150,7 @@ export default function MaintenancePage() {
             </tr>
           </thead>
           <tbody>
-            {logs.map((log: any) => (
+            {filteredLogs.map((log: any) => (
               <tr key={log.id} className="border-b last:border-0">
                 <td className="p-4 text-gray-500 font-mono text-xs">{new Date(log.created_at).toLocaleString('zh-CN')}</td>
                 <td className="p-4 font-mono text-xs">{log.station_id ? log.station_id.slice(0, 8) + '...' : '—'}</td>
@@ -162,7 +162,7 @@ export default function MaintenancePage() {
                 <td className="p-4 text-xs text-gray-500 font-mono max-w-md truncate">{typeof log.data === 'string' ? log.data : JSON.stringify(log.data)}</td>
               </tr>
             ))}
-            {logs.length === 0 && (
+            {filteredLogs.length === 0 && (
               <tr><td colSpan={4} className="p-8 text-center text-gray-400">暂无系统日志</td></tr>
             )}
           </tbody>

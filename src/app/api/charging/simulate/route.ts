@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { ChargingService } from '@/services/ChargingService';
 
-export async function POST(_request: NextRequest) {
+export async function POST() {
   try {
     const results = await ChargingService.simulateAllActiveOrders();
     return NextResponse.json({ success: true, results });

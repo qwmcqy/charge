@@ -1,5 +1,4 @@
 import { supabase } from '@/lib/supabase';
-import { ChargingOrder } from './ChargingOrder';
 import { DEFAULT_SYSTEM_CONFIG } from '@/lib/constants';
 
 export class ParkingFeeOrder {

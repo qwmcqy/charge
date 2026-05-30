@@ -42,13 +42,20 @@ export class ChargingStation {
   }
 
   async startCharging(orderId: string): Promise<void> {
+    if (this.status === StationStatus.Charging && this.currentOrderId === orderId) {
+      return;
+    }
+    if (this.status !== StationStatus.Available || this.currentOrderId) {
+      throw new Error('Charging station is no longer available');
+    }
+
     this.status = StationStatus.Charging;
     this.currentOrderId = orderId;
 
     // Initialize telemetry data
     this.simulateChargingData(0);
 
-    await supabase
+    const { data, error } = await supabase
       .from('charging_stations')
       .update({
         status: 'charging',
@@ -58,7 +65,15 @@ export class ChargingStation {
         current_power: Math.round(this.currentVoltage * this.currentCurrent * SIMULATION.powerFactor) / 1000,
         temperature: this.temperature,
       })
-      .eq('id', this.id);
+      .eq('id', this.id)
+      .eq('status', 'available')
+      .is('current_order_id', null)
+      .select('id')
+      .maybeSingle();
+
+    if (error || !data) {
+      throw new Error('Charging station was claimed by another order');
+    }
   }
 
   async stopCharging(): Promise<void> {
@@ -151,10 +166,6 @@ export class ChargingStation {
 
   // 模拟充电数据更新
   simulateChargingData(elapsedMinutes: number) {
-    const speed = this.mode === ChargeMode.Fast
-      ? SIMULATION.chargingSpeedFast
-      : SIMULATION.chargingSpeedSlow;
-
     this.currentVoltage = SIMULATION.voltageNominal + (Math.random() - 0.5) * 20;
     this.currentCurrent = this.mode === ChargeMode.Fast
       ? SIMULATION.currentFastNominal + (Math.random() - 0.5) * 20

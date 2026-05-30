@@ -50,7 +50,7 @@ export class BillService {
     });
   }
 
-  static async verifyBill(billId: string, adminId: string) {
+  static async verifyBill(billId: string) {
     const bill = await Bill.fetchById(billId);
     const chargingOrder = await ChargingOrder.fetchById(bill.chargingOrderId);
     const expectedFee = chargingOrder.startTime

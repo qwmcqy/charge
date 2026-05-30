@@ -1,6 +1,5 @@
 import { Queue } from './Queue';
 import { QueueEntry } from './QueueEntry';
-import { ChargeMode } from '@/lib/types';
 
 /**
  * 等候队列 — 溢出/备用队列

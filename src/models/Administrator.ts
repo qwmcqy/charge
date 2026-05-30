@@ -1,6 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import type {
-  AdminProfile, StationData, OrderData, QueueEntryData,
+  AdminProfile, StationData, OrderData,
   ParkingFeeOrderData, FaultData, BillData, SystemConfig,
   OperationReport, DateRange, LogFilter, SystemLog, StationInput,
 } from '@/lib/types';

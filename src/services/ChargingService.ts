@@ -6,10 +6,14 @@ import { QueueService } from './QueueService';
 import { ParkingFeeOrder as ParkingFeeOrderModel } from '@/models/ParkingFeeOrder';
 import { OrderStatus, ChargeMode } from '@/lib/types';
 import { calculateTimeOfUseFee, getModePowerKwhPerHour } from '@/lib/billing';
+import { SIMULATION } from '@/lib/constants';
 
 const supabase = createServiceClient();
 
 export class ChargingService {
+  private static simulationInFlight: Promise<Record<string, unknown>[]> | null = null;
+  private static lastSimulationAt = 0;
+
   static async requestCharge(
     userId: string,
     mode: ChargeMode,
@@ -35,12 +39,25 @@ export class ChargingService {
     }
     if (requestedKwh !== undefined && requestedKwh <= 0) throw new Error('请求充电量必须大于0度');
 
+    const nextMode = mode || order.mode;
+    const nextKwh = requestedKwh ?? order.targetBatteryLevel;
+
+    if (nextMode === order.mode) {
+      await supabase
+        .from('charging_orders')
+        .update({ target_battery_level: nextKwh })
+        .eq('id', order.id);
+
+      return {
+        order: await ChargingOrder.fetchById(order.id),
+        queuePositionPreserved: true,
+      };
+    }
+
     if (order.queueEntryId) {
       await supabase.from('queue_entries').update({ status: 'cancelled' }).eq('id', order.queueEntryId);
     }
 
-    const nextMode = mode || order.mode;
-    const nextKwh = requestedKwh ?? order.targetBatteryLevel;
     await supabase
       .from('charging_orders')
       .update({
@@ -69,12 +86,13 @@ export class ChargingService {
     if (![OrderStatus.Pending, OrderStatus.Queued, OrderStatus.Assigned, OrderStatus.Charging].includes(order.status)) {
       throw new Error('当前订单不能取消');
     }
+    const previousStatus = order.status;
     await order.cancel();
-    if (order.stationId && (order.status === OrderStatus.Charging || order.status === OrderStatus.Assigned)) {
+    if (order.stationId && (previousStatus === OrderStatus.Charging || previousStatus === OrderStatus.Assigned)) {
       const station = await ChargingStation.fetchById(order.stationId);
       await station.stopCharging();
-      QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
     }
+    await QueueService.dispatchNext(order.mode as 'fast' | 'slow');
     return order;
   }
 
@@ -88,8 +106,8 @@ export class ChargingService {
       throw new Error('目标充电桩当前不可用');
     }
 
-    await order.assignStation(station.id);
     await station.startCharging(order.id);
+    await order.assignStation(station.id);
     await order.startCharging();
 
     if (order.queueEntryId) {
@@ -111,11 +129,14 @@ export class ChargingService {
 
     const fault = station.detectFault();
     if (fault) {
+      const fee = calculateTimeOfUseFee(order.startTime || new Date(), order.energyConsumed, order.mode);
+      order.chargingFee = fee.totalFee;
       fault.affectedOrderId = order.id;
       await fault.report();
       await order.endCharging(OrderStatus.FaultStopped);
-      await QueueService.rescheduleStationQueue(station.id, order.mode);
-      QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
+      const { Bill } = await import('@/models/Bill');
+      await Bill.generate(order.userId, order.id);
+      await QueueService.dispatchNext(order.mode as 'fast' | 'slow');
       return { order, station, fault, stopped: true };
     }
 
@@ -133,7 +154,7 @@ export class ChargingService {
       await order.endCharging(OrderStatus.Completed);
       await station.stopCharging();
       await ParkingFeeOrderModel.create(order.id, new Date());
-      QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
+      await QueueService.dispatchNext(order.mode as 'fast' | 'slow');
       return { order, station, completed: true };
     }
 
@@ -155,7 +176,7 @@ export class ChargingService {
       await station.stopCharging();
     }
     await ParkingFeeOrderModel.create(order.id, new Date());
-    QueueService.dispatchNext(chargeMode).catch(() => {});
+    await QueueService.dispatchNext(chargeMode);
     return order;
   }
 
@@ -208,13 +229,32 @@ export class ChargingService {
   }
 
   static async simulateAllActiveOrders() {
+    if (this.simulationInFlight) {
+      return this.simulationInFlight;
+    }
+
+    if (Date.now() - this.lastSimulationAt < SIMULATION.dataReportIntervalMs) {
+      return [];
+    }
+
+    this.lastSimulationAt = Date.now();
+    this.simulationInFlight = this.runSimulationForActiveOrders();
+
+    try {
+      return await this.simulationInFlight;
+    } finally {
+      this.simulationInFlight = null;
+    }
+  }
+
+  private static async runSimulationForActiveOrders(): Promise<Record<string, unknown>[]> {
     const { data: orders, error } = await supabase
       .from('charging_orders')
       .select('id')
       .eq('status', 'charging');
     if (error) throw new Error(`获取活跃订单失败: ${error.message}`);
 
-    const results = [];
+    const results: Record<string, unknown>[] = [];
     for (const o of (orders || [])) {
       try {
         const result = await this.simulateChargingTick((o as any).id);

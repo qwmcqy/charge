@@ -2,7 +2,7 @@ import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const response = NextResponse.next({ request });
@@ -24,8 +24,8 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const { data: { session } } = await supabase.auth.getSession();
-  const isAuthenticated = !!session;
+  const { data: { user } } = await supabase.auth.getUser();
+  const isAuthenticated = !!user;
   const demoRole = request.cookies.get('bupt_demo_role')?.value;
 
   if (pathname.startsWith('/api/')) {

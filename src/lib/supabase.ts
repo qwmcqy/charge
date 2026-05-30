@@ -5,9 +5,14 @@ import type { cookies } from 'next/headers';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
+let browserClient: ReturnType<typeof createBrowserClient> | null = null;
+
 /** Browser client — for client components (has cookie auth) */
 export function createClient() {
-  return createBrowserClient(supabaseUrl, supabaseAnonKey);
+  if (!browserClient) {
+    browserClient = createBrowserClient(supabaseUrl, supabaseAnonKey);
+  }
+  return browserClient;
 }
 
 /** Server client — for API routes / server components */
@@ -35,12 +40,8 @@ export function createServiceClient() {
 }
 
 /** Single shared browser client instance */
-let _browserClient: ReturnType<typeof createBrowserClient> | null = null;
 export function getBrowserClient() {
-  if (!_browserClient) {
-    _browserClient = createClient();
-  }
-  return _browserClient;
+  return createClient();
 }
 
 /** Default singleton — always uses service client.

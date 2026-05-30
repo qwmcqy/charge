@@ -15,6 +15,7 @@ export class ConfigService {
     }
 
     const { data, error } = await supabase.from('system_configs').select('*');
+    if (error) return DEFAULT_SYSTEM_CONFIG;
     const config: any = { ...DEFAULT_SYSTEM_CONFIG };
     if (data) {
       for (const row of data) {

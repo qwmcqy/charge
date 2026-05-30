@@ -16,14 +16,21 @@ type OrderRow = {
   id: string;
   user_id: string;
   station_id: string | null;
+  queue_entry_id: string | null;
   mode: ChargeMode;
   status: string;
+  request_battery_level: number;
   target_battery_level: number;
   energy_consumed: number;
+  charging_fee: number;
+  start_time?: string;
+  end_time?: string;
   created_at: string;
 };
 
 export class QueueService {
+  private static dispatchInFlight: Partial<Record<'fast' | 'slow', Promise<unknown>>> = {};
+
   static async tryChargeOrQueue(order: ChargingOrder) {
     const assignment = await QueueService.findBestStation(order.mode, order.targetBatteryLevel);
     if (assignment) {
@@ -222,6 +229,22 @@ export class QueueService {
   }
 
   static async dispatchNext(queueType: 'fast' | 'slow') {
+    const currentDispatch = QueueService.dispatchInFlight[queueType];
+    if (currentDispatch) {
+      return currentDispatch;
+    }
+
+    const dispatch = QueueService.dispatchNextUnlocked(queueType);
+    QueueService.dispatchInFlight[queueType] = dispatch;
+
+    try {
+      return await dispatch;
+    } finally {
+      delete QueueService.dispatchInFlight[queueType];
+    }
+  }
+
+  private static async dispatchNextUnlocked(queueType: 'fast' | 'slow') {
     const { data: stations } = await supabase
       .from('charging_stations')
       .select('*')
@@ -229,17 +252,22 @@ export class QueueService {
       .eq('status', 'available')
       .order('station_number', { ascending: true });
 
+    let result = null;
     for (const station of (stations || []) as StationRow[]) {
       const queued = await QueueService.getStationQueuedOrders(station.id);
       if (queued.length > 0) {
         const { ChargingService } = await import('./ChargingService');
-        return ChargingService.assignAndStartCharging(queued[0].id, station.id);
+        result = await ChargingService.assignAndStartCharging(queued[0].id, station.id);
       }
-      const promoted = await QueueService.promoteFromWaiting(queueType);
-      if (promoted) return promoted;
     }
 
-    return null;
+    while (true) {
+      const promoted = await QueueService.promoteFromWaiting(queueType);
+      if (!promoted) break;
+      result = promoted;
+    }
+
+    return result;
   }
 
   static async getStationQueuedOrders(stationId: string): Promise<OrderRow[]> {
@@ -273,10 +301,26 @@ export class QueueService {
 
     const entry = entries[0] as any;
     const order = new ChargingOrder(entry.charging_orders);
-    await supabase.from('queue_entries').update({ status: 'cancelled' }).eq('id', entry.id);
     const assignment = await QueueService.findBestStation(order.mode, order.targetBatteryLevel);
     if (!assignment) return null;
-    return QueueService.assignOrderToStationQueue(order, assignment.station, assignment.ordersAhead);
+
+    await supabase.from('queue_entries').update({ status: 'cancelled' }).eq('id', entry.id);
+    await supabase
+      .from('charging_orders')
+      .update({ queue_entry_id: null })
+      .eq('id', order.id);
+    order.queueEntryId = undefined;
+
+    try {
+      return await QueueService.assignOrderToStationQueue(order, assignment.station, assignment.ordersAhead);
+    } catch (error) {
+      await supabase.from('queue_entries').update({ status: 'waiting' }).eq('id', entry.id);
+      await supabase
+        .from('charging_orders')
+        .update({ queue_entry_id: entry.id, station_id: null, status: 'queued' })
+        .eq('id', order.id);
+      throw error;
+    }
   }
 
   static async getAllQueuesStatus() {
@@ -306,14 +350,25 @@ export class QueueService {
 
   static async rescheduleStationQueue(faultStationId: string, mode: ChargeMode) {
     const affectedOrders = await QueueService.getStationQueuedOrders(faultStationId);
+    const entryIds = affectedOrders
+      .map(order => order.queue_entry_id)
+      .filter((id): id is string => !!id);
+
+    if (entryIds.length > 0) {
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'cancelled' })
+        .in('id', entryIds);
+    }
+
     await supabase
       .from('charging_orders')
-      .update({ station_id: null })
+      .update({ station_id: null, queue_entry_id: null })
       .eq('station_id', faultStationId)
       .eq('status', 'queued');
 
     for (const orderRow of affectedOrders) {
-      const order = new ChargingOrder(orderRow as any);
+      const order = new ChargingOrder({ ...orderRow, station_id: undefined, queue_entry_id: undefined });
       const assignment = await QueueService.findBestStation(mode, order.targetBatteryLevel);
       if (assignment) {
         await QueueService.assignOrderToStationQueue(order, assignment.station, assignment.ordersAhead);
@@ -321,5 +376,54 @@ export class QueueService {
         await QueueService.addToWaitingArea(order);
       }
     }
+  }
+
+  static async rebalanceStationQueues(mode: ChargeMode) {
+    const { data: stations } = await supabase
+      .from('charging_stations')
+      .select('id')
+      .eq('mode', mode)
+      .neq('status', 'fault')
+      .neq('status', 'offline');
+    const stationIds = (stations || []).map(station => station.id);
+    if (stationIds.length === 0) return;
+
+    const { data: queuedOrders } = await supabase
+      .from('charging_orders')
+      .select('*')
+      .in('station_id', stationIds)
+      .eq('status', 'queued')
+      .order('created_at', { ascending: true });
+
+    const orders = (queuedOrders || []) as OrderRow[];
+    const entryIds = orders
+      .map(order => order.queue_entry_id)
+      .filter((id): id is string => !!id);
+
+    if (entryIds.length > 0) {
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'cancelled' })
+        .in('id', entryIds);
+    }
+
+    if (orders.length > 0) {
+      await supabase
+        .from('charging_orders')
+        .update({ station_id: null, queue_entry_id: null })
+        .in('id', orders.map(order => order.id));
+    }
+
+    for (const orderRow of orders) {
+      const order = new ChargingOrder({ ...orderRow, station_id: undefined, queue_entry_id: undefined });
+      const assignment = await QueueService.findBestStation(mode, order.targetBatteryLevel);
+      if (assignment) {
+        await QueueService.assignOrderToStationQueue(order, assignment.station, assignment.ordersAhead);
+      } else {
+        await QueueService.addToWaitingArea(order);
+      }
+    }
+
+    await QueueService.dispatchNext(mode);
   }
 }

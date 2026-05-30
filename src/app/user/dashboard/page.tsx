@@ -30,6 +30,7 @@ export default function UserDashboard() {
     parking: null,
   });
   const isFetchingRef = useRef(false);
+  const isSimulatingRef = useRef(false);
 
   const loadData = useCallback(async () => {
     if (isFetchingRef.current) return;
@@ -125,15 +126,26 @@ export default function UserDashboard() {
     }
   }, []);
 
+  const runSimulation = useCallback(async () => {
+    if (isSimulatingRef.current) return;
+    isSimulatingRef.current = true;
+    try {
+      await fetch('/api/charging/simulate', { method: 'POST' });
+    } catch {
+      // Simulation unavailable
+    } finally {
+      isSimulatingRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
-    loadData();
-    const interval = setInterval(() => {
-      loadData();
-      // Drive simulation tick
-      fetch('/api/charging/simulate', { method: 'POST' }).catch(() => {});
-    }, 2000);
+    void loadData();
+    const interval = setInterval(async () => {
+      await runSimulation();
+      await loadData();
+    }, 3000);
     return () => clearInterval(interval);
-  }, [loadData]);
+  }, [loadData, runSimulation]);
 
   async function handleAction(action: 'pause' | 'resume' | 'end') {
     if (!order) return;
@@ -352,7 +364,7 @@ export default function UserDashboard() {
       {/* Paused banner */}
       {order.status === 'paused' && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-yellow-700 text-sm font-medium mb-4">
-          充电已暂停 — 点击"恢复充电"继续
+          充电已暂停，点击&quot;恢复充电&quot;继续
         </div>
       )}
 

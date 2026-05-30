@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { Fault } from '@/models/Fault';
-import { FaultType, FaultSeverity } from '@/lib/types';
+import { OrderStatus } from '@/lib/types';
+import { calculateTimeOfUseFee } from '@/lib/billing';
 
 export class FaultService {
   /**
@@ -37,6 +38,7 @@ export class FaultService {
   static async handleFault(faultId: string, adminId: string, resolution: string) {
     const fault = await Fault.fetchById(faultId);
     await fault.handle(adminId, resolution);
+    await fault.resolve();
     return fault;
   }
 
@@ -66,7 +68,26 @@ export class FaultService {
 
       if (fault) {
         fault.affectedOrderId = (stationData as any).current_order_id;
+        const { ChargingOrder } = await import('@/models/ChargingOrder');
+        const order = fault.affectedOrderId
+          ? await ChargingOrder.fetchById(fault.affectedOrderId)
+          : null;
+        if (order) {
+          order.chargingFee = calculateTimeOfUseFee(
+            order.startTime || new Date(),
+            order.energyConsumed,
+            order.mode
+          ).totalFee;
+        }
+
         await fault.report();
+        if (order) {
+          await order.endCharging(OrderStatus.FaultStopped);
+          const { Bill } = await import('@/models/Bill');
+          const { QueueService } = await import('@/services/QueueService');
+          await Bill.generate(order.userId, order.id);
+          await QueueService.dispatchNext(order.mode);
+        }
         faults.push(fault);
       }
     }

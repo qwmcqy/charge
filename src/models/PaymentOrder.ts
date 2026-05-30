@@ -106,6 +106,7 @@ export class PaymentOrder {
   }
 
   async refund(reason: string): Promise<void> {
+    void reason;
     this.status = PaymentStatus.Refunded;
 
     await supabase

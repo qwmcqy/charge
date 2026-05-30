@@ -100,7 +100,13 @@ export class ChargingOrder {
     if (this.stationId) {
       await supabase
         .from('charging_stations')
-        .update({ status: 'available', current_order_id: null, current_voltage: 0, current_current: 0, current_power: 0 })
+        .update({
+          status: endStatus === OrderStatus.FaultStopped ? 'fault' : 'available',
+          current_order_id: null,
+          current_voltage: 0,
+          current_current: 0,
+          current_power: 0,
+        })
         .eq('id', this.stationId);
     }
 

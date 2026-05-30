@@ -3,7 +3,6 @@ import { PaymentOrder } from '@/models/PaymentOrder';
 import { Bill } from '@/models/Bill';
 import { Notification } from '@/models/Notification';
 import { PaymentType, PaymentMethod, NotificationType } from '@/lib/types';
-import { PAYMENT_SIMULATION } from '@/lib/constants';
 
 export class PaymentService {
   /**

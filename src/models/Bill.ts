@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
 import { ChargingOrder } from './ChargingOrder';
 import { ParkingFeeOrder } from './ParkingFeeOrder';
-import { BillDetail, OrderStatus } from '@/lib/types';
+import { BillDetail } from '@/lib/types';
 import { calculateTimeOfUseFee } from '@/lib/billing';
 
 export class Bill {
@@ -40,6 +40,14 @@ export class Bill {
     ratePerKwh?: number,
     parkingFeeOrderId?: string
   ): Promise<Bill> {
+    const { data: existing } = await supabase
+      .from('bills')
+      .select('*')
+      .eq('charging_order_id', chargingOrderId)
+      .limit(1)
+      .maybeSingle();
+    if (existing) return new Bill(existing);
+
     const chargingOrder = await ChargingOrder.fetchById(chargingOrderId);
     const chargingFee = chargingOrder.startTime
       ? calculateTimeOfUseFee(chargingOrder.startTime, chargingOrder.energyConsumed, chargingOrder.mode).totalFee

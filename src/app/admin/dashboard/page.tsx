@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase';
 
 interface StationRow {
@@ -29,6 +29,7 @@ export default function AdminDashboard() {
   const [stations, setStations] = useState<StationRow[]>([]);
   const [activeOrders, setActiveOrders] = useState<Map<string, ChargingOrderInfo>>(new Map());
   const [loading, setLoading] = useState(true);
+  const isSimulatingRef = useRef(false);
 
   const loadStations = useCallback(async () => {
     try {
@@ -77,18 +78,22 @@ export default function AdminDashboard() {
 
   // Run simulation tick for all active orders
   const runSimulation = useCallback(async () => {
+    if (isSimulatingRef.current) return;
+    isSimulatingRef.current = true;
     try {
       await fetch('/api/charging/simulate', { method: 'POST' });
     } catch {
       // Simulation unavailable — skip
+    } finally {
+      isSimulatingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    loadStations();
-    const interval = setInterval(() => {
-      runSimulation();
-      loadStations();
+    void loadStations();
+    const interval = setInterval(async () => {
+      await runSimulation();
+      await loadStations();
     }, 5000);
     return () => clearInterval(interval);
   }, [loadStations, runSimulation]);
