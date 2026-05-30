@@ -121,7 +121,7 @@ export default function QueuePage() {
                       {entry.status === 'ready' ? '就绪' : '排队中'}
                     </span>
                     <p className="text-sm text-gray-500 mt-2">
-                      预计等待: ~{entry.estimated_wait_minutes || '?'} 分钟
+                      预计等待: ~{entry.estimated_wait_minutes != null && entry.estimated_wait_minutes >= 0 ? entry.estimated_wait_minutes : '?'} 分钟
                     </p>
                   </div>
                 </div>

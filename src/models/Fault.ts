@@ -45,7 +45,7 @@ export class Fault {
     });
   }
 
-  async report(): Promise<void> {
+  async report(skipOrderUpdate = false): Promise<void> {
     const { data, error } = await supabase
       .from('faults')
       .insert({
@@ -67,8 +67,8 @@ export class Fault {
       .update({ status: 'fault' })
       .eq('id', this.stationId);
 
-    // 如果有受影响的订单，停止充电
-    if (this.affectedOrderId) {
+    // 如果有受影响的订单，停止充电（除非调用方选择自行处理订单状态）
+    if (this.affectedOrderId && !skipOrderUpdate) {
       await supabase
         .from('charging_orders')
         .update({ status: 'fault_stopped', end_time: new Date().toISOString() })
@@ -97,10 +97,23 @@ export class Fault {
       .update({ resolved_at: this.resolvedAt.toISOString() })
       .eq('id', this.id);
 
+    // 获取充电桩信息以确定模式
+    const { data: station } = await supabase
+      .from('charging_stations')
+      .select('mode')
+      .eq('id', this.stationId)
+      .single();
+
     await supabase
       .from('charging_stations')
       .update({ status: 'available', current_order_id: null })
       .eq('id', this.stationId);
+
+    // 恢复后调度队列中的等待者
+    if (station) {
+      const { QueueService } = await import('@/services/QueueService');
+      QueueService.dispatchNext((station as any).mode as 'fast' | 'slow').catch(() => {});
+    }
   }
 
   async notifyAdmin(): Promise<void> {

@@ -95,8 +95,8 @@ export class ChargingOrder {
       .update({ status: endStatus, end_time: this.endTime.toISOString() })
       .eq('id', this.id);
 
-    // 更新充电桩状态
-    if (this.stationId) {
+    // 更新充电桩状态（故障结束时不改变桩状态，保持fault让管理员处理）
+    if (this.stationId && endStatus !== OrderStatus.FaultStopped) {
       await supabase
         .from('charging_stations')
         .update({ status: 'available', current_order_id: null, current_voltage: 0, current_current: 0, current_power: 0 })
@@ -166,6 +166,7 @@ export class ChargingOrder {
       [OrderStatus.Assigned]: '已分配',
       [OrderStatus.Charging]: '充电中',
       [OrderStatus.Paused]: '已暂停',
+      [OrderStatus.FaultPending]: '故障待处理',
       [OrderStatus.Completed]: '已完成',
       [OrderStatus.FaultStopped]: '故障中断',
       [OrderStatus.Cancelled]: '已取消',

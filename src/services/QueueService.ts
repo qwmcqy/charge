@@ -179,11 +179,13 @@ export class QueueService {
       .single();
     if (!waitingQueue) return null;
 
+    // 只提升匹配目标队列模式的条目（快充→快充队列，慢充→慢充队列）
     const { data: waitingEntries } = await supabase
       .from('queue_entries')
       .select('*')
       .eq('queue_id', waitingQueue.id)
       .eq('status', 'waiting')
+      .eq('mode', queueType)
       .order('position', { ascending: true })
       .limit(1);
 

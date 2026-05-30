@@ -11,7 +11,29 @@ export async function GET(request: NextRequest) {
     }
 
     const bills = await BillService.getUserBills(userId);
-    return NextResponse.json(bills);
+
+    // 返回结构化数据，包含充电详情
+    const result = bills.map((bill: any) => ({
+      id: bill.id,
+      chargingOrderId: bill.chargingOrderId || bill.charging_order_id,
+      chargingFee: bill.chargingFee ?? bill.charging_fee ?? 0,
+      parkingFee: bill.parkingFee ?? bill.parking_fee ?? 0,
+      totalAmount: bill.totalAmount ?? bill.total_amount ?? 0,
+      generatedAt: bill.generatedAt || bill.generated_at,
+      paidAt: bill.paidAt || bill.paid_at,
+      status: bill.status,
+      // 充电详情
+      energyConsumed: bill.energyConsumed ?? 0,
+      chargingDurationMinutes: bill.chargingDurationMinutes ?? 0,
+      ratePerKwh: bill.ratePerKwh ?? 0,
+      chargeMode: bill.chargeMode ?? 'fast',
+      startTime: bill.startTime,
+      endTime: bill.endTime,
+      requestBatteryLevel: bill.requestBatteryLevel,
+      targetBatteryLevel: bill.targetBatteryLevel,
+    }));
+
+    return NextResponse.json({ bills: result });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }

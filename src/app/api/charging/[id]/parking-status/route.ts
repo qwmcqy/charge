@@ -13,7 +13,7 @@ export async function GET(
       return NextResponse.json({ parked: false });
     }
 
-    return NextResponse.json({ parked: true, ...status });
+    return NextResponse.json({ ...status, parked: status.parked });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }

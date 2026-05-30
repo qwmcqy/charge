@@ -74,6 +74,13 @@ export class ChargingService {
         .from('queue_entries')
         .update({ status: 'charging' })
         .eq('id', order.queueEntryId);
+    } else {
+      // 兼容旧数据：订单上可能未记录 queue_entry_id，但队列条目存在
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'charging' })
+        .eq('order_id', orderId)
+        .eq('status', 'waiting');
     }
 
     return { order, station };
@@ -93,24 +100,30 @@ export class ChargingService {
     station.simulateChargingData(SIMULATED_MINUTES);
     await station.reportStatus();
 
-    // 故障检测
+    // 故障检测 — 不直接结束，等待用户选择
     const fault = station.detectFault();
     if (fault) {
       fault.affectedOrderId = order.id;
-      await fault.report();
+      await fault.report(true); // 跳过订单状态更新，由本方法控制
 
-      // 通知用户故障
+      // 设置订单为故障待处理状态，等待用户选择
+      await supabase
+        .from('charging_orders')
+        .update({ status: 'fault_pending' })
+        .eq('id', order.id);
+
+      order.status = OrderStatus.FaultPending;
+
+      // 通知用户选择处理方式
       await Notification.send(
         order.userId,
         NotificationType.System,
-        '充电异常终止',
-        `您的充电因${fault.description}已自动停止。故障ID: ${fault.id?.slice(0, 8)}`,
+        '充电异常 — 请选择处理方式',
+        `您的充电因${fault.description}已中断。您可以：① 结束本次充电；② 优先插入队列第一位，等充电桩恢复后继续充电。故障ID: ${fault.id?.slice(0, 8)}`,
         order.id
       );
 
-      await order.endCharging(OrderStatus.FaultStopped);
-      QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
-      return { order, station, fault, stopped: true };
+      return { order, station, fault, faultPending: true };
     }
 
     // 更新充电进度
@@ -133,7 +146,11 @@ export class ChargingService {
       await station.stopCharging();
 
       // 创建停车费订单，开始计时（账单在用户离开时生成）
-      await ParkingFeeOrderModel.create(order.id, new Date());
+      try {
+        await ParkingFeeOrderModel.create(order.id, new Date());
+      } catch (err: any) {
+        console.error('创建停车费订单失败:', err.message, 'orderId:', order.id);
+      }
 
       // 释放充电桩，调度下一个等待者
       QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
@@ -165,8 +182,12 @@ export class ChargingService {
     }
 
     // 创建停车费订单，开始计时（账单在用户离开时生成）
-    const { ParkingFeeOrder } = await import('@/models/ParkingFeeOrder');
-    await ParkingFeeOrder.create(order.id, new Date());
+    try {
+      const { ParkingFeeOrder } = await import('@/models/ParkingFeeOrder');
+      await ParkingFeeOrder.create(order.id, new Date());
+    } catch (err: any) {
+      console.error('创建停车费订单失败:', err.message, 'orderId:', order.id);
+    }
 
     // 释放充电桩，调度下一个等待者
     QueueService.dispatchNext(chargeMode).catch(() => {});
@@ -210,8 +231,15 @@ export class ChargingService {
    * 获取当前停车状态（供仪表盘轮询使用）
    */
   static async getParkingStatus(orderId: string) {
-    const parkingOrder = await ParkingFeeOrderModel.fetchByChargingOrder(orderId);
-    if (!parkingOrder) return null;
+    let parkingOrder = await ParkingFeeOrderModel.fetchByChargingOrder(orderId);
+    // 如果停车订单不存在（可能因之前创建失败），自动补建
+    if (!parkingOrder) {
+      try {
+        parkingOrder = await ParkingFeeOrderModel.create(orderId, new Date());
+      } catch {
+        return null;
+      }
+    }
 
     parkingOrder.calculateOvertimeFee();
 
@@ -222,6 +250,7 @@ export class ChargingService {
     const isOvertime = elapsedMinutes > parkingOrder.gracePeriodMinutes;
 
     return {
+      parked: parkingOrder.status === 'parked',
       status: parkingOrder.status,
       chargeCompleteTime: parkingOrder.chargeCompleteTime.toISOString(),
       elapsedMinutes,
@@ -232,6 +261,96 @@ export class ChargingService {
       parkingFee: parkingOrder.parkingFee,
       ratePerMinute: parkingOrder.ratePerMinute,
     };
+  }
+
+  /**
+   * 故障处理决策：用户选择结束充电或优先排队
+   */
+  static async handleFaultDecision(
+    orderId: string,
+    userId: string,
+    decision: 'end' | 'requeue'
+  ) {
+    const order = await ChargingOrder.fetchById(orderId);
+    if (order.userId !== userId) throw new Error('无权操作此订单');
+    if (order.status !== OrderStatus.FaultPending) throw new Error('订单不在故障待处理状态');
+
+    if (decision === 'end') {
+      await order.endCharging(OrderStatus.FaultStopped);
+      QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
+      return { order, choice: 'end' };
+    }
+
+    // 优先排队：结束当前订单，创建新订单并插入队列第一位
+    await order.endCharging(OrderStatus.FaultStopped);
+
+    // 创建新订单（fresh start，energy_consumed 归零）
+    const newOrder = await ChargingOrder.create(
+      userId,
+      order.mode,
+      order.requestBatteryLevel,
+      order.targetBatteryLevel
+    );
+
+    // 查找对应类型的队列
+    const { data: queue } = await supabase
+      .from('queues')
+      .select('*')
+      .eq('type', order.mode)
+      .single();
+    if (!queue) throw new Error(`${order.mode} 队列不存在`);
+
+    // 将所有现有队列条目后移一位
+    const { data: queueEntries } = await supabase
+      .from('queue_entries')
+      .select('id, position')
+      .eq('queue_id', (queue as any).id)
+      .eq('status', 'waiting')
+      .order('position', { ascending: true });
+
+    for (const entry of (queueEntries || []).reverse()) {
+      await supabase
+        .from('queue_entries')
+        .update({ position: entry.position + 1 })
+        .eq('id', entry.id);
+    }
+
+    // 在位置1插入新的优先排队条目（关联新订单）
+    const { data: newEntry, error: entryErr } = await supabase
+      .from('queue_entries')
+      .insert({
+        user_id: userId,
+        order_id: newOrder.id,
+        queue_id: (queue as any).id,
+        mode: order.mode,
+        position: 1,
+        status: 'waiting',
+        battery_level: order.requestBatteryLevel,
+        estimated_wait_minutes: order.mode === 'fast' ? 40 : 180,
+      })
+      .select()
+      .single();
+
+    if (entryErr) throw new Error(`创建优先排队条目失败: ${entryErr.message}`);
+
+    // 关联新订单到队列条目
+    await supabase
+      .from('charging_orders')
+      .update({ queue_entry_id: newEntry.id, status: 'queued' })
+      .eq('id', newOrder.id);
+
+    await Notification.send(
+      userId,
+      NotificationType.System,
+      '优先排队已生效',
+      `您已插入${order.mode === 'fast' ? '快充' : '慢充'}队列第一位，等待充电桩恢复后将继续充电。`,
+      newOrder.id
+    );
+
+    // 尝试立即调度
+    QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});
+
+    return { order, newOrderId: newOrder.id, choice: 'requeue', queueEntry: newEntry, position: 1 };
   }
 
   /**

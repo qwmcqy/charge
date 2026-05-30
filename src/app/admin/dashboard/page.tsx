@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { createClient } from '@/lib/supabase';
 
 interface StationRow {
   id: string;
@@ -25,73 +24,80 @@ interface ChargingOrderInfo {
   target_battery_level: number;
 }
 
+interface QueueEntryRow {
+  id: string;
+  position: number;
+  user_name: string;
+  user_plate: string;
+  mode: string;
+  battery_level: number;
+  estimated_wait_minutes: number;
+  queue_type: string;
+}
+
 export default function AdminDashboard() {
   const [stations, setStations] = useState<StationRow[]>([]);
   const [activeOrders, setActiveOrders] = useState<Map<string, ChargingOrderInfo>>(new Map());
+  const [queueEntries, setQueueEntries] = useState<QueueEntryRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [simulateMsg, setSimulateMsg] = useState('');
 
-  const loadStations = useCallback(async () => {
+  // 通过服务端 API 获取数据（service client 绕过 RLS，可读取所有用户名）
+  const loadDashboard = useCallback(async () => {
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from('charging_stations')
-        .select('*')
-        .order('station_number');
+      const res = await fetch('/api/admin/dashboard');
+      if (!res.ok) throw new Error('API error');
+      const data = await res.json();
 
-      if (error) throw error;
-      if (data) {
-        setStations(data as StationRow[]);
-
-        // Fetch active orders for stations that are charging
-        const chargingStationIds = (data as StationRow[])
-          .filter(s => s.status === 'charging' && s.current_order_id)
-          .map(s => s.current_order_id);
-
-        if (chargingStationIds.length > 0) {
-          const { data: orders } = await supabase
-            .from('charging_orders')
-            .select('id, user_id, energy_consumed, request_battery_level, target_battery_level, users(name)')
-            .in('id', chargingStationIds);
-
-          if (orders) {
-            const map = new Map<string, ChargingOrderInfo>();
-            for (const o of orders) {
-              map.set(o.id, {
-                id: o.id,
-                user_name: (o as any).users?.name || '未知',
-                energy_consumed: o.energy_consumed || 0,
-                request_battery_level: o.request_battery_level || 0,
-                target_battery_level: o.target_battery_level || 0,
-              });
-            }
-            setActiveOrders(map);
-          }
-        }
+      if (data.stations) setStations(data.stations);
+      if (data.orders) {
+        const map = new Map<string, ChargingOrderInfo>();
+        Object.entries(data.orders).forEach(([id, info]: [string, any]) => {
+          map.set(id, info as ChargingOrderInfo);
+        });
+        setActiveOrders(map);
       }
+      if (data.queue) setQueueEntries(data.queue);
     } catch {
-      // Supabase unavailable — keep current data
+      // API unavailable — keep current data
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Run simulation tick for all active orders
+  // Run simulation tick for all active orders + dispatch queue
   const runSimulation = useCallback(async () => {
     try {
-      await fetch('/api/charging/simulate', { method: 'POST' });
+      const res = await fetch('/api/charging/simulate', { method: 'POST' });
+      const result = await res.json();
+      if (result.dispatch) {
+        const parts: string[] = [];
+        if (result.dispatch.fast) parts.push('快充队列已调度');
+        if (result.dispatch.slow) parts.push('慢充队列已调度');
+        if (parts.length > 0) setSimulateMsg(parts.join(' + '));
+        else setSimulateMsg('无等待订单');
+      }
     } catch {
       // Simulation unavailable — skip
     }
   }, []);
 
   useEffect(() => {
-    loadStations();
+    loadDashboard();
+    runSimulation();
     const interval = setInterval(() => {
       runSimulation();
-      loadStations();
+      loadDashboard();
     }, 5000);
     return () => clearInterval(interval);
-  }, [loadStations, runSimulation]);
+  }, [loadDashboard, runSimulation]);
+
+  useEffect(() => {
+    if (simulateMsg) {
+      const t = setTimeout(() => setSimulateMsg(''), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [simulateMsg]);
 
   const stats = {
     total: stations.length,
@@ -100,6 +106,7 @@ export default function AdminDashboard() {
     fault: stations.filter(s => s.status === 'fault').length,
     offline: stations.filter(s => s.status === 'offline').length,
     totalPower: stations.reduce((sum, s) => sum + (s.current_power || 0), 0),
+    queueTotal: queueEntries.length,
   };
 
   const statusColors: Record<string, string> = {
@@ -114,28 +121,79 @@ export default function AdminDashboard() {
     <div>
       <h2 className="text-xl font-bold text-gray-800 mb-2">实时设备监控 (UM01)</h2>
       <p className="text-xs text-gray-400 mb-6">
-        数据来源: Supabase · 每5秒自动刷新 · {stations.length} 个充电桩{loading ? ' · 加载中...' : ''}
+        数据来源: Supabase · 每5秒自动刷新 · {stations.length} 个充电桩
+        {simulateMsg && <span className="ml-3 text-blue-500 font-medium">⚡ {simulateMsg}</span>}
       </p>
 
-      <div className="grid grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-6 gap-3 mb-6">
         {[
           { label: '总数', value: stats.total, color: 'text-blue-600' },
           { label: '可用', value: stats.available, color: 'text-green-600' },
           { label: '充电中', value: stats.charging, color: 'text-yellow-600' },
           { label: '故障', value: stats.fault, color: 'text-red-600' },
-          { label: '总功率', value: `${stats.totalPower.toFixed(1)} kW`, color: 'text-purple-600' },
+          { label: '排队中', value: stats.queueTotal, color: 'text-purple-600' },
+          { label: '总功率', value: `${stats.totalPower.toFixed(1)} kW`, color: 'text-indigo-600' },
         ].map(card => (
-          <div key={card.label} className="bg-white rounded-xl shadow p-4">
+          <div key={card.label} className="bg-white rounded-xl shadow p-3">
             <p className="text-xs text-gray-500">{card.label}</p>
-            <p className={`text-2xl font-bold ${card.color}`}>{card.value}</p>
+            <p className={`text-xl font-bold ${card.color}`}>{card.value}</p>
           </div>
         ))}
       </div>
 
+      {/* 排队状态 */}
+      {queueEntries.length > 0 && (
+        <div className="bg-white rounded-xl shadow mb-6 overflow-hidden">
+          <div className="p-3 border-b border-gray-200 bg-purple-50">
+            <h3 className="font-semibold text-purple-800 text-sm">📋 当前排队队列 ({queueEntries.length} 人)</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left p-2 font-medium text-gray-600">位置</th>
+                  <th className="text-left p-2 font-medium text-gray-600">用户</th>
+                  <th className="text-left p-2 font-medium text-gray-600">车牌</th>
+                  <th className="text-left p-2 font-medium text-gray-600">模式</th>
+                  <th className="text-left p-2 font-medium text-gray-600">电量</th>
+                  <th className="text-left p-2 font-medium text-gray-600">预计等待</th>
+                  <th className="text-left p-2 font-medium text-gray-600">队列类型</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queueEntries.map(e => (
+                  <tr key={e.id} className="border-b last:border-0">
+                    <td className="p-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-100 text-purple-700 font-bold text-xs">
+                        {e.position}
+                      </span>
+                    </td>
+                    <td className="p-2 font-medium">{e.user_name}</td>
+                    <td className="p-2 font-mono text-gray-500">{e.user_plate}</td>
+                    <td className="p-2">{e.mode === 'fast' ? '⚡快充' : '🔋慢充'}</td>
+                    <td className="p-2">{e.battery_level}%</td>
+                    <td className="p-2">~{e.estimated_wait_minutes}分</td>
+                    <td className="p-2">
+                      <span className={`px-1.5 py-0.5 rounded text-xs ${
+                        e.queue_type === 'fast' ? 'bg-blue-100 text-blue-700' :
+                        e.queue_type === 'slow' ? 'bg-purple-100 text-purple-700' :
+                        'bg-orange-100 text-orange-700'
+                      }`}>
+                        {e.queue_type === 'fast' ? '快充队列' : e.queue_type === 'slow' ? '慢充队列' : '等候队列'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl shadow">
         <div className="p-4 border-b border-gray-200 flex justify-between items-center">
           <h3 className="font-semibold">充电桩实时状态</h3>
-          <button onClick={loadStations} className="text-xs text-blue-600 hover:text-blue-800">刷新</button>
+          <button onClick={loadDashboard} className="text-xs text-blue-600 hover:text-blue-800">刷新</button>
         </div>
         {stations.length === 0 ? (
           <div className="p-8 text-center text-gray-400">暂无充电桩数据</div>

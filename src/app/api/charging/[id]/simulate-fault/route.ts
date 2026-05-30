@@ -3,7 +3,6 @@ import { createServiceClient } from '@/lib/supabase';
 import { Fault } from '@/models/Fault';
 import { FaultType, FaultSeverity, NotificationType } from '@/lib/types';
 import { Notification } from '@/models/Notification';
-import { QueueService } from '@/services/QueueService';
 
 const supabase = createServiceClient();
 
@@ -40,20 +39,23 @@ export async function POST(
       affected_order_id: id,
     });
 
-    await fault.report();
+    await fault.report(true); // 跳过订单状态更新
+
+    // 设置为故障待处理状态，等待用户选择
+    await supabase
+      .from('charging_orders')
+      .update({ status: 'fault_pending' })
+      .eq('id', id);
 
     await Notification.send(
       userId,
       NotificationType.System,
-      '充电异常终止（模拟故障）',
-      `您的充电因模拟故障已自动停止。故障ID: ${fault.id?.slice(0, 8)}`,
+      '充电异常 — 请选择处理方式（模拟故障）',
+      `您的充电因模拟故障已中断。您可以：① 结束本次充电；② 优先插入队列第一位，等充电桩恢复后继续充电。故障ID: ${fault.id?.slice(0, 8)}`,
       id
     );
 
-    const mode = ((order as any).mode) as 'fast' | 'slow';
-    QueueService.dispatchNext(mode).catch(() => {});
-
-    return NextResponse.json({ success: true, faultId: fault.id });
+    return NextResponse.json({ success: true, faultId: fault.id, faultPending: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }

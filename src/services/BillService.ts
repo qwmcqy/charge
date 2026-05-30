@@ -48,10 +48,48 @@ export class BillService {
   }
 
   /**
-   * 获取用户账单列表
+   * 获取用户账单列表（含充电订单详细信息）
    */
   static async getUserBills(userId: string) {
-    return Bill.fetchByUser(userId);
+    const bills = await Bill.fetchByUser(userId);
+
+    // 批量获取关联的充电订单
+    const orderIds = bills.map((b) => b.chargingOrderId).filter(Boolean);
+    if (orderIds.length === 0) return bills;
+
+    const { data: orders } = await supabase
+      .from('charging_orders')
+      .select('*')
+      .in('id', orderIds);
+
+    const ordersMap = new Map((orders || []).map((o: any) => [o.id, o]));
+
+    // 将充电订单详情合并到账单对象
+    return bills.map((bill) => {
+      const order = ordersMap.get(bill.chargingOrderId);
+      if (!order) return bill;
+
+      const mode = order.mode || 'fast';
+      const ratePerKwh = mode === 'fast' ? 1.2 : 0.8;
+
+      let chargingDurationMinutes = 0;
+      if (order.start_time && order.end_time) {
+        const start = new Date(order.start_time).getTime();
+        const end = new Date(order.end_time).getTime();
+        chargingDurationMinutes = Math.round((end - start) / 60000);
+      }
+
+      return Object.assign(bill, {
+        energyConsumed: order.energy_consumed || 0,
+        chargingDurationMinutes,
+        ratePerKwh,
+        chargeMode: mode,
+        startTime: order.start_time,
+        endTime: order.end_time,
+        requestBatteryLevel: order.request_battery_level,
+        targetBatteryLevel: order.target_battery_level,
+      });
+    });
   }
 
   /**

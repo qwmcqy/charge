@@ -24,6 +24,7 @@ export default function UserDashboard() {
   const [actionLoading, setActionLoading] = useState(false);
   const [departLoading, setDepartLoading] = useState(false);
   const [faultLoading, setFaultLoading] = useState(false);
+  const [faultDecisionLoading, setFaultDecisionLoading] = useState(false);
   const [message, setMessage] = useState('');
   
   // 新增：缓存上一次的状态，用于对比是否真的变化
@@ -60,7 +61,7 @@ export default function UserDashboard() {
         .from('charging_orders')
         .select('*')
         .eq('user_id', user.id)
-        .in('status', ['charging', 'paused', 'completed'])
+        .in('status', ['charging', 'paused', 'fault_pending', 'completed'])
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -262,8 +263,101 @@ export default function UserDashboard() {
     }
   }
 
+  async function handleFaultDecision(decision: 'end' | 'requeue') {
+    if (!order) return;
+    setFaultDecisionLoading(true);
+    setMessage('');
+
+    try {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('请先登录');
+
+      const res = await fetch(`/api/charging/${order.id}/fault-decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, decision }),
+      });
+      const result = await res.json();
+
+      if (!res.ok) throw new Error(result.error || '操作失败');
+
+      if (decision === 'end') {
+        setMessage('充电已终止，故障已记录');
+        setOrder(null);
+        setStation(null);
+        setParking(null);
+        lastStateRef.current = { order: null, station: null, parking: null };
+      } else {
+        setMessage('您已插入队列第一位！等待充电桩恢复后将优先为您充电');
+        // 重建一个简化的 order 对象来显示排队状态
+        setOrder({ ...order, status: 'queued', queuePosition: 1 });
+        lastStateRef.current = { order: { ...order, status: 'queued', queuePosition: 1 }, station: null, parking: null };
+      }
+      setTimeout(() => setMessage(''), 5000);
+    } catch (err: any) {
+      setMessage(err.message || '操作失败');
+    } finally {
+      setFaultDecisionLoading(false);
+    }
+  }
+
   if (loading) {
     return <div className="flex items-center justify-center p-12"><div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full" /></div>;
+  }
+
+  // ====== STATE: Fault pending - user must choose ======
+  if (order && order.status === 'fault_pending') {
+    return (
+      <div>
+        <h2 className="text-xl font-bold text-gray-800 mb-2">充电实时监控 (UC04)</h2>
+        <p className="text-xs text-gray-400 mb-6">数据每2秒自动刷新</p>
+
+        {message && <div className={`mb-4 p-3 border rounded-lg text-sm ${message.includes('失败') ? 'bg-red-50 border-red-200 text-red-700' : 'bg-green-50 border-green-200 text-green-700'}`}>{message}</div>}
+
+        {/* Fault alert */}
+        <div className="bg-red-50 border-2 border-red-300 rounded-xl p-6 mb-6 text-center">
+          <div className="text-5xl mb-4">⚠️</div>
+          <h3 className="text-xl font-bold text-red-700 mb-2">充电桩故障</h3>
+          <p className="text-red-600 mb-2">充电过程中检测到充电桩异常，已自动中断充电</p>
+          <p className="text-sm text-gray-500">请选择以下方式处理：</p>
+        </div>
+
+        {/* Choice buttons */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <button onClick={() => handleFaultDecision('end')} disabled={faultDecisionLoading}
+            className="p-6 bg-white rounded-xl shadow border-2 border-gray-200 hover:border-red-300 transition text-center disabled:opacity-50">
+            <div className="text-3xl mb-2">🛑</div>
+            <div className="font-semibold text-gray-800 mb-1">结束充电</div>
+            <div className="text-xs text-gray-400">终止本次充电，按已充电量计费</div>
+          </button>
+          <button onClick={() => handleFaultDecision('requeue')} disabled={faultDecisionLoading}
+            className="p-6 bg-white rounded-xl shadow border-2 border-blue-300 hover:border-blue-500 transition text-center disabled:opacity-50">
+            <div className="text-3xl mb-2">⚡</div>
+            <div className="font-semibold text-blue-700 mb-1">优先排队</div>
+            <div className="text-xs text-gray-400">直接插入队列第一位，原有队列整体后移</div>
+          </button>
+        </div>
+
+        {faultDecisionLoading && (
+          <div className="text-center text-sm text-gray-400">处理中...</div>
+        )}
+
+        {/* Order info */}
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { label: '充电桩编号', value: station?.station_number || '—' },
+            { label: '充电模式', value: order.mode === 'fast' ? '快充' : '慢充' },
+            { label: '已消耗电量', value: `${order.energy_consumed?.toFixed(2) || '0.00'} kWh` },
+          ].map(info => (
+            <div key={info.label} className="bg-white rounded-xl shadow p-4">
+              <p className="text-sm text-gray-500">{info.label}</p>
+              <p className="text-lg font-semibold">{info.value}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   // ====== STATE: No active order ======

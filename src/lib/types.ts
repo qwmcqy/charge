@@ -19,6 +19,7 @@ export enum OrderStatus {
   Assigned = 'assigned',
   Charging = 'charging',
   Paused = 'paused',
+  FaultPending = 'fault_pending',
   Completed = 'completed',
   FaultStopped = 'fault_stopped',
   Cancelled = 'cancelled',

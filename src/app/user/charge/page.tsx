@@ -16,12 +16,16 @@ export default function ChargePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [userId, setUserId] = useState('');
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   useEffect(() => {
     async function getUser() {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) setUserId(user.id);
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) setUserId(user.id);
+      } catch {}
+      setCheckingAuth(false);
     }
     getUser();
   }, []);
@@ -32,7 +36,7 @@ export default function ChargePage() {
     setError('');
 
     if (!userId) {
-      setError('请先登录');
+      setError('登录状态已过期，请重新登录');
       setLoading(false);
       return;
     }
@@ -156,9 +160,9 @@ export default function ChargePage() {
           <div className="flex justify-between text-xs text-gray-400 mt-1"><span>{batteryLevel + 5}%</span><span>75%</span><span>100%</span></div>
         </div>
 
-        <button type="submit" disabled={loading}
+        <button type="submit" disabled={loading || checkingAuth}
           className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition">
-          {loading ? '提交中...' : '发起充电请求'}
+          {checkingAuth ? '正在验证登录状态...' : loading ? '提交中...' : '发起充电请求'}
         </button>
 
         <p className="text-xs text-gray-400 text-center">
