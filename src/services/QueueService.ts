@@ -69,13 +69,16 @@ export class QueueService {
       isOverflow = true;
     }
 
-    // 计算排队位置
-    const { count: position } = await supabase
+    // 计算排队位置：用 MAX(position)+1 防重复
+    const { data: maxPos } = await supabase
       .from('queue_entries')
-      .select('*', { count: 'exact', head: true })
+      .select('position')
       .eq('queue_id', targetQueue.id)
-      .eq('status', 'waiting');
-    const newPosition = (position || 0) + 1;
+      .eq('status', 'waiting')
+      .order('position', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const newPosition = ((maxPos as any)?.position || 0) + 1;
 
     // 创建队列条目
     const entry = await QueueEntry.create(
@@ -165,7 +168,59 @@ export class QueueService {
     }
 
     const entry = entries[0] as any;
-    return QueueService.assignEntryToStation(entry);
+
+    // 原子锁：防止并发 dispatchNext 抢同一条目分配到不同桩
+    const { data: claimed, error: claimErr } = await supabase
+      .from('queue_entries')
+      .update({ status: 'ready' })
+      .eq('id', entry.id)
+      .eq('status', 'waiting')
+      .select()
+      .maybeSingle();
+
+    if (claimErr || !claimed) {
+      return QueueService.dispatchNext(queueType); // 已被抢，重试下一个
+    }
+
+    const queueId = claimed.queue_id;
+    try {
+      const result = await QueueService.assignEntryToStation(claimed);
+      if (!result) {
+        await supabase.from('queue_entries').update({ status: 'waiting' }).eq('id', claimed.id);
+      } else {
+        // 分配成功，重排剩余队列 + 从等候队列补充
+        QueueService.renumberQueue(queueId).catch(() => {});
+        QueueService.promoteFromWaiting(queueType).catch(() => {});
+      }
+      return result;
+    } catch {
+      await supabase.from('queue_entries').update({ status: 'waiting' }).eq('id', claimed.id);
+      return null;
+    }
+  }
+
+  /**
+   * 重排队列：将 waiting 条目按现有 position 排序后压缩为 1,2,3...
+   */
+  static async renumberQueue(queueId: string) {
+    const { data: entries } = await supabase
+      .from('queue_entries')
+      .select('id, position')
+      .eq('queue_id', queueId)
+      .eq('status', 'waiting')
+      .order('position', { ascending: true });
+
+    if (entries && entries.length > 0) {
+      for (let i = 0; i < entries.length; i++) {
+        const newPos = i + 1;
+        if ((entries[i] as any).position !== newPos) {
+          await supabase
+            .from('queue_entries')
+            .update({ position: newPos })
+            .eq('id', (entries[i] as any).id);
+        }
+      }
+    }
   }
 
   /**
@@ -211,8 +266,16 @@ export class QueueService {
       return null;
     }
 
-    // 移到目标队列
-    const newPosition = (mainCount || 0) + 1;
+    // 用 MAX(position)+1 防重复
+    const { data: maxPosT } = await supabase
+      .from('queue_entries')
+      .select('position')
+      .eq('queue_id', targetQueue.id)
+      .eq('status', 'waiting')
+      .order('position', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const newPosition = ((maxPosT as any)?.position || 0) + 1;
 
     await supabase
       .from('queue_entries')
@@ -230,6 +293,10 @@ export class QueueService {
       `您已从等候队列进入${queueType === 'fast' ? '快充' : '慢充'}主队列，当前位置: ${newPosition}`,
       entry.order_id
     );
+
+    // 两个队列都重排：等候队列少了一人，主队列多了一人
+    QueueService.renumberQueue(waitingQueue.id).catch(() => {});
+    QueueService.renumberQueue(targetQueue.id).catch(() => {});
 
     // 尝试分配（可能有刚释放的充电桩）
     return QueueService.assignEntryToStation(entry);
@@ -268,7 +335,7 @@ export class QueueService {
         .from('queue_entries')
         .select('*, users(name, vehicle_plate)')
         .eq('queue_id', (q as any).id)
-        .eq('status', 'waiting')
+        .in('status', ['waiting', 'ready'])
         .order('position', { ascending: true });
 
       result.push({

@@ -26,17 +26,12 @@ export default function FaultsPage() {
 
   async function loadFaults() {
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from('faults')
-        .select('*, charging_stations(station_number, location)')
-        .order('detected_at', { ascending: false })
-        .limit(50);
-
-      if (error) throw error;
+      const res = await fetch('/api/admin/faults');
+      if (!res.ok) throw new Error('API error');
+      const data = await res.json();
       setFaults(data || []);
     } catch {
-      // Supabase unavailable
+      // unavailable
     } finally {
       setLoading(false);
     }

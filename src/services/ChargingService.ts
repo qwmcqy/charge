@@ -142,15 +142,16 @@ export class ChargingService {
       const actualRate = order.mode === ChargeMode.Fast ? 1.2 : 0.8;
       order.calculateChargingFee(actualRate);
 
-      await order.endCharging(OrderStatus.Completed);
-      await station.stopCharging();
-
-      // 创建停车费订单，开始计时（账单在用户离开时生成）
+      // 先创建停车记录，成功后再结束订单。失败则保留 charging 状态下次重试
       try {
         await ParkingFeeOrderModel.create(order.id, new Date());
       } catch (err: any) {
-        console.error('创建停车费订单失败:', err.message, 'orderId:', order.id);
+        console.error('!!! 创建停车费订单失败:', err.message, 'orderId:', order.id);
+        return { order, station, error: `停车记录创建失败: ${err.message}` };
       }
+
+      await order.endCharging(OrderStatus.Completed);
+      await station.stopCharging();
 
       // 释放充电桩，调度下一个等待者
       QueueService.dispatchNext(order.mode as 'fast' | 'slow').catch(() => {});

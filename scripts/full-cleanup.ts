@@ -3,72 +3,66 @@ import { createServiceClient } from '../src/lib/supabase';
 const supabase = createServiceClient();
 
 async function main() {
-  console.log('=== 全面清理 ===\n');
+  console.log('=== 全面深度清理 ===\n');
 
-  // 1. 清理所有未解决的故障
-  const { data: faults } = await supabase.from('faults').select('id').is('resolved_at', null);
-  if (faults && faults.length > 0) {
-    await supabase.from('faults').update({ resolved_at: new Date().toISOString() }).is('resolved_at', null);
-    console.log(`✅ 解决 ${faults.length} 个未解决故障`);
-  }
+  // 按FK依赖顺序：先删引用方，后删被引用方
 
-  // 2. 清理所有队列条目
-  const { data: qEntries } = await supabase.from('queue_entries').select('id');
-  if (qEntries && qEntries.length > 0) {
-    await supabase.from('queue_entries').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    console.log(`✅ 删除 ${qEntries.length} 个队列条目`);
-  }
+  // 0. 充电桩日志（FK关联到充电桩和订单）
+  await supabase.from('station_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
 
-  // 3. 清理所有非最终状态的订单
-  const stuckStatuses = ['pending', 'queued', 'assigned', 'charging', 'paused', 'fault_pending'];
-  const { data: stuckOrders } = await supabase.from('charging_orders').select('id,status').in('status', stuckStatuses);
-  if (stuckOrders && stuckOrders.length > 0) {
-    for (const o of stuckOrders) {
-      await supabase.from('charging_orders').update({ status: 'cancelled', end_time: new Date().toISOString() }).eq('id', (o as any).id);
-    }
-    console.log(`✅ 取消 ${stuckOrders.length} 个未完成订单`);
-  }
+  // 1. 通知
+  const { count: nc } = await supabase.from('notifications').select('*', { count: 'exact', head: true });
+  await supabase.from('notifications').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log(`✅ 删除 ${nc || 0} 条通知`);
 
-  // 4. 重置所有充电桩
+  // 2. 队列条目
+  const { count: qc } = await supabase.from('queue_entries').select('*', { count: 'exact', head: true });
+  await supabase.from('queue_entries').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log(`✅ 删除 ${qc || 0} 条队列条目`);
+
+  // 3. 故障
+  const { count: fc } = await supabase.from('faults').select('*', { count: 'exact', head: true });
+  await supabase.from('faults').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log(`✅ 删除 ${fc || 0} 条故障`);
+
+  // 4. 账单（引用 parking_fee_orders, charging_orders）
+  const { count: bc } = await supabase.from('bills').select('*', { count: 'exact', head: true });
+  await supabase.from('bills').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log(`✅ 删除 ${bc || 0} 条账单`);
+
+  // 5. 停车费订单（引用 charging_orders）
+  const { count: pc } = await supabase.from('parking_fee_orders').select('*', { count: 'exact', head: true });
+  await supabase.from('parking_fee_orders').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log(`✅ 删除 ${pc || 0} 条停车费订单`);
+
+  // 6. 充电订单 —— 全部删除
+  const { count: ocBefore } = await supabase.from('charging_orders').select('*', { count: 'exact', head: true });
+  // 先清掉 station 引用
   await supabase.from('charging_stations').update({
-    status: 'available',
     current_order_id: null,
-    current_power: 0,
-    current_voltage: 0,
-    current_current: 0,
-  }).neq('status', 'available');
-  // Also reset available ones that still have current_order_id set
+  }).neq('id', '00000000-0000-0000-0000-000000000000');
+  await supabase.from('charging_orders').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log(`✅ 删除 ${ocBefore || 0} 条订单`);
+
+  // 7. 重置充电桩
   await supabase.from('charging_stations').update({
-    current_order_id: null,
-    current_power: 0,
-  }).eq('status', 'available').not('current_order_id', 'is', null);
-  console.log('✅ 重置所有充电桩为 available');
+    status: 'available', current_order_id: null,
+    current_power: 0, current_voltage: 0, current_current: 0,
+  }).neq('id', '00000000-0000-0000-0000-000000000000');
+  console.log('✅ 充电桩全部重置');
 
-  // 5. 删除孤立的 parking_fee_orders（引用了不存在的订单）
-  const { data: allOrders } = await supabase.from('charging_orders').select('id');
-  const validOrderIds = (allOrders || []).map((o: any) => o.id);
-  const { data: allParking } = await supabase.from('parking_fee_orders').select('id, charging_order_id');
-  if (allParking) {
-    for (const p of allParking) {
-      if (!validOrderIds.includes((p as any).charging_order_id)) {
-        await supabase.from('bills').delete().eq('parking_fee_order_id', (p as any).id);
-        await supabase.from('parking_fee_orders').delete().eq('id', (p as any).id);
-      }
-    }
+  // 验证
+  console.log('\n--- 最终状态 ---');
+  const { data: stations } = await supabase.from('charging_stations').select('station_number,status').order('station_number');
+  for (const s of (stations || [])) {
+    console.log(`  ${(s as any).station_number}=${(s as any).status}`);
   }
-  console.log('✅ 清理孤立的停车费订单');
-
-  // 6. Verify final state
-  const { data: stations } = await supabase.from('charging_stations').select('station_number,status');
-  console.log('\n最终充电桩状态:', (stations || []).map((s: any) => `${s.station_number}=${s.status}`).join(', '));
-
-  const { count: queueCount } = await supabase.from('queue_entries').select('*', { count: 'exact', head: true });
-  console.log(`队列条目: ${queueCount || 0}`);
-
-  const { count: faultCount } = await supabase.from('faults').select('*', { count: 'exact', head: true }).is('resolved_at', null);
-  console.log(`未解决故障: ${faultCount || 0}`);
-
-  console.log('\n🎉 清理完成');
+  const { count: o } = await supabase.from('charging_orders').select('*', { count: 'exact', head: true });
+  const { count: b } = await supabase.from('bills').select('*', { count: 'exact', head: true });
+  const { count: p } = await supabase.from('parking_fee_orders').select('*', { count: 'exact', head: true });
+  const { count: q } = await supabase.from('queue_entries').select('*', { count: 'exact', head: true });
+  console.log(`订单:${o || 0} 账单:${b || 0} 停车:${p || 0} 队列:${q || 0}`);
+  console.log('\n🎉 深度清理完成');
 }
 
 main().catch(console.error);

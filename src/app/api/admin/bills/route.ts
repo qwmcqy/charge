@@ -1,27 +1,56 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { BillService } from '@/services/BillService';
+import { createServiceClient } from '@/lib/supabase';
 
-export async function POST(request: NextRequest) {
+const supabase = createServiceClient();
+
+export async function GET(_request: NextRequest) {
   try {
-    const body = await request.json();
-    const { chargingOrderId } = body;
+    const { data: rawBills } = await supabase
+      .from('bills')
+      .select('*, users(name, vehicle_plate)')
+      .order('generated_at', { ascending: false })
+      .limit(50);
 
-    if (!chargingOrderId) {
-      return NextResponse.json({ error: '缺少 chargingOrderId' }, { status: 400 });
-    }
+    const orderIds = (rawBills || []).map((b: any) => b.charging_order_id).filter(Boolean);
+    const { data: orders } = await supabase
+      .from('charging_orders')
+      .select('*')
+      .in('id', orderIds);
 
-    const bill = await BillService.generateBillForAdmin(chargingOrderId);
-    return NextResponse.json({ success: true, bill });
+    const ordersMap = new Map((orders || []).map((o: any) => [o.id, o]));
+
+    const bills = (rawBills || []).map((b: any) => {
+      const order = ordersMap.get(b.charging_order_id);
+      const mode = order?.mode || 'fast';
+      const ratePerKwh = mode === 'fast' ? 1.2 : 0.8;
+
+      let duration = 0;
+      if (order?.start_time && order?.end_time) {
+        duration = Math.round(
+          (new Date(order.end_time).getTime() - new Date(order.start_time).getTime()) / 60000
+        );
+      }
+
+      return {
+        id: b.id,
+        charging_order_id: b.charging_order_id,
+        user_name: b.users?.name || '未知',
+        user_plate: b.users?.vehicle_plate || '未登记',
+        charging_fee: b.charging_fee || 0,
+        parking_fee: b.parking_fee || 0,
+        total_amount: b.total_amount || 0,
+        status: b.status || 'unpaid',
+        generated_at: b.generated_at,
+        paid_at: b.paid_at,
+        energy_consumed: order?.energy_consumed || 0,
+        charging_duration_minutes: duration,
+        rate_per_kwh: ratePerKwh,
+        charge_mode: mode,
+      };
+    });
+
+    return NextResponse.json(bills);
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
-}
-
-export async function GET() {
-  try {
-    const stats = await BillService.getBillStats();
-    return NextResponse.json(stats);
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

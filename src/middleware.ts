@@ -29,6 +29,10 @@ export async function middleware(request: NextRequest) {
 
   if (pathname.startsWith('/api/')) {
     if (pathname.startsWith('/api/auth/')) return NextResponse.next();
+    // Service key 绕过认证，供服务端脚本使用
+    if (request.headers.get('x-service-key') === process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return response;
+    }
     if (!isAuthenticated) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

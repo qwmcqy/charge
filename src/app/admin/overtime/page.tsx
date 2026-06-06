@@ -1,7 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase';
+import { useState, useEffect, useCallback } from 'react';
 
 interface OvertimeRow {
   id: string;
@@ -20,56 +19,41 @@ export default function OvertimePage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
 
-  useEffect(() => { loadOvertime(); }, []);
-
-  async function loadOvertime() {
+  const loadOvertime = useCallback(async () => {
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase
-        .from('parking_fee_orders')
-        .select('*, users(name, vehicle_plate), charging_stations(station_number)')
-        .eq('status', 'parked')
-        .order('charge_complete_time', { ascending: true });
-
-      if (error) throw error;
-
-      setList((data || []).map((po: any) => {
-        const chargeComplete = new Date(po.charge_complete_time);
-        const graceMinutes = po.grace_period_minutes || 15;
-        const overtimeMinutes = Math.max(0, Math.floor((Date.now() - chargeComplete.getTime()) / 60000) - graceMinutes);
-        const rate = po.rate_per_minute || 0.1;
-        return {
-          id: po.id,
-          user_name: po.users?.name || '未知',
-          user_plate: po.users?.vehicle_plate || '未登记',
-          station_number: po.charging_stations?.station_number || '-',
-          charge_complete_time: po.charge_complete_time,
-          overtime_minutes: overtimeMinutes,
-          parking_fee: Math.round(overtimeMinutes * rate * 100) / 100,
-          grace_period_minutes: graceMinutes,
-          status: po.status,
-        };
+      const res = await fetch('/api/admin/overtime');
+      if (!res.ok) throw new Error('API error');
+      const data = await res.json();
+      const flat = (data || []).map((item: any) => ({
+        id: item.id,
+        user_name: item.users?.name || '未知',
+        user_plate: item.users?.vehicle_plate || '未登记',
+        station_number: item.charging_stations?.station_number || '-',
+        charge_complete_time: item.charge_complete_time,
+        overtime_minutes: item.overtime_minutes || 0,
+        parking_fee: item.parking_fee || 0,
+        grace_period_minutes: item.grace_period_minutes || 1,
+        status: item.status,
       }));
+      setList(flat);
     } catch {
-      // Supabase unavailable
+      // unavailable
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => { loadOvertime(); }, [loadOvertime]);
 
   async function notifyVehicle(id: string) {
     try {
-      const supabase = createClient();
-      const { data: po } = await supabase.from('parking_fee_orders').select('user_id').eq('id', id).single();
-      if (po) {
-        await supabase.from('notifications').insert({
-          user_id: po.user_id,
-          type: 'overtime_warning',
-          title: '超时停车提醒',
-          content: '您的车辆已超时停放，请尽快驶离充电位以避免额外费用。',
-        });
-      }
-      setMessage('已向车主发送催离通知');
+      const res = await fetch('/api/admin/overtime', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parkingOrderId: id }),
+      });
+      if (res.ok) setMessage('已向车主发送催离通知');
+      else setMessage('通知发送失败');
     } catch {
       setMessage('通知发送失败');
     }
@@ -83,7 +67,10 @@ export default function OvertimePage() {
   return (
     <div>
       <h2 className="text-xl font-bold text-gray-800 mb-2">超时车辆管理 (UM05)</h2>
-      <p className="text-xs text-gray-400 mb-6">数据来源: Supabase · 宽限期 15 分钟</p>
+      <p className="text-xs text-gray-400 mb-6">
+        数据来源: Supabase · 宽限期 1 分钟 · 每60秒自动刷新
+        <button onClick={loadOvertime} className="ml-3 text-blue-600 hover:text-blue-800">刷新</button>
+      </p>
 
       {message && <div className="mb-4 p-3 bg-blue-50 border border-blue-200 text-blue-700 text-sm rounded-lg">{message}</div>}
 
@@ -107,7 +94,7 @@ export default function OvertimePage() {
               {list.map(item => (
                 <tr key={item.id} className="border-b last:border-0">
                   <td className="p-4 font-medium">{item.user_name}</td>
-                  <td className="p-4 font-mono">{item.user_plate}</td>
+                  <td className="p-4 font-mono text-gray-500">{item.user_plate}</td>
                   <td className="p-4">{item.station_number}</td>
                   <td className="p-4 text-gray-500 text-xs">{new Date(item.charge_complete_time).toLocaleString('zh-CN')}</td>
                   <td className="p-4">

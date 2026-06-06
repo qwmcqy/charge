@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { FaultService } from '@/services/FaultService';
+import { createServiceClient } from '@/lib/supabase';
 
-export async function GET(request: NextRequest) {
+const supabase = createServiceClient();
+
+// GET: 列出所有故障（用 service client 绕过 RLS 以显示完整数据）
+export async function GET(_request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const status = searchParams.get('status') as 'open' | 'resolved' | undefined;
+    const { data, error } = await supabase
+      .from('faults')
+      .select('*, charging_stations(station_number, location)')
+      .order('detected_at', { ascending: false })
+      .limit(50);
 
-    const faults = await FaultService.getAllFaults(status);
-    const stats = await FaultService.getFaultStats();
-    return NextResponse.json({ faults, stats });
+    if (error) throw error;
+    return NextResponse.json(data || []);
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

@@ -146,10 +146,26 @@ export class ChargingOrder {
       .eq('id', this.id);
 
     if (this.queueEntryId) {
+      // 先查队列ID用于重排
+      const { data: entry } = await supabase
+        .from('queue_entries')
+        .select('queue_id, mode')
+        .eq('id', this.queueEntryId)
+        .maybeSingle();
+
       await supabase
         .from('queue_entries')
         .update({ status: 'cancelled' })
         .eq('id', this.queueEntryId);
+
+      // 重排剩余队列
+      if (entry) {
+        const { QueueService } = await import('@/services/QueueService');
+        const qid = (entry as any).queue_id;
+        const qmode = (entry as any).mode as 'fast' | 'slow';
+        QueueService.renumberQueue(qid).catch(() => {});
+        QueueService.promoteFromWaiting(qmode).catch(() => {});
+      }
     }
   }
 

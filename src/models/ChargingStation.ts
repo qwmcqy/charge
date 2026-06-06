@@ -105,11 +105,12 @@ export class ChargingStation {
       })
       .eq('id', this.id);
 
-    await supabase.from('station_logs').insert({
-      station_id: this.id,
-      event_type: 'status_report',
-      data: this.getRealtimeData() as any,
-    });
+    // station_logs 写入关闭（大量并发时会严重拖慢性能，调试时按需开启）
+    // await supabase.from('station_logs').insert({
+    //   station_id: this.id,
+    //   event_type: 'status_report',
+    //   data: this.getRealtimeData() as any,
+    // });
   }
 
   detectFault(): Fault | null {
