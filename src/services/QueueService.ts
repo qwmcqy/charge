@@ -18,6 +18,7 @@ export class QueueService {
       .select('*')
       .eq('mode', order.mode)
       .eq('status', 'available')
+      .order('station_number', { ascending: true })
       .limit(1)
       .maybeSingle();
 
@@ -145,7 +146,7 @@ export class QueueService {
   /**
    * 调度：充电完成后，从队列取出下一个等待者并分配充电桩
    */
-  static async dispatchNext(queueType: 'fast' | 'slow') {
+  static async dispatchNext(queueType: 'fast' | 'slow'): Promise<unknown> {
     const { data: queue } = await supabase
       .from('queues')
       .select('*')
@@ -311,6 +312,7 @@ export class QueueService {
       .select('*')
       .eq('mode', entry.mode)
       .eq('status', 'available')
+      .order('station_number', { ascending: true })
       .limit(1)
       .maybeSingle();
 

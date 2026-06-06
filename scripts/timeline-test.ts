@@ -69,6 +69,17 @@ async function vehicleCancel(vid: string) {
   vehicles.delete(vid);
 }
 
+async function payWithRetry(userId: string, billId: string, label: string) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const payRes = await post(`${API}/payment`, { userId, billId, method: 'wechat' });
+    if (!payRes.error && payRes.success) return true;
+    const reason = payRes.error || payRes.message || 'unknown payment failure';
+    console.log(`    pay fail [${label}] attempt ${attempt}: ${reason}`);
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return false;
+}
+
 async function triggerFault(targetVehicle: string) {
   const orderId = vehicles.get(targetVehicle);
   if (!orderId) { console.log(`  > ${targetVehicle} 无活跃订单`); return; }
@@ -234,14 +245,15 @@ async function main() {
     console.log(`  Force-completing ${rem.length} remaining orders`);
     for (const ro of rem as any[]) {
       await supabase.from('charging_orders').update({status:'completed',end_time:new Date().toISOString()}).eq('id',ro.id);
+      await supabase.from('queue_entries').update({status:'completed'}).eq('order_id',ro.id).in('status',['waiting','ready','charging']);
       if (ro.station_id) {
         await supabase.from('charging_stations').update({status:'available',current_order_id:null,current_power:0,current_voltage:0,current_current:0}).eq('id',ro.station_id);
         const { data: ep, error: epErr } = await supabase.from('parking_fee_orders').select('id').eq('charging_order_id',ro.id).maybeSingle();
-        if (!ep) {
+        if (epErr) {
+          console.log(`    parking select error: ${epErr.message}`);
+        } else if (!ep) {
           const { error: insErr } = await supabase.from('parking_fee_orders').insert({charging_order_id:ro.id,user_id:ro.user_id,station_id:ro.station_id,charge_complete_time:new Date().toISOString(),overtime_minutes:0,parking_fee:0,rate_per_minute:0.1,grace_period_minutes:15,status:'parked'});
           if (insErr) console.log(`    parking insert error:`, insErr);
-        } else if (epErr) {
-          console.log(`    parking select error: ${epErr.message}`);
         }
       }
     }
@@ -287,9 +299,7 @@ async function main() {
         const depRes = await post(`${API}/charging/${co.id}/depart`, { userId: co.user_id });
         if (!depRes.error) {
           departed++;
-          const payRes = await post(`${API}/payment`, { userId: co.user_id, billId: depRes.billId, method: 'wechat' });
-          if (!payRes.error) paid++;
-          else console.log(`    pay fail [${co.id.slice(0,8)}]: ${payRes.error}`);
+          if (await payWithRetry(co.user_id, depRes.billId, co.id.slice(0,8))) paid++;
         } else {
           console.log(`    depart fail [${co.id.slice(0,8)}]: ${depRes.error}`);
         }
@@ -315,10 +325,13 @@ async function main() {
   }
   console.log(v3Parked ? '  V3(主账号) 已停车，等待手动离场' : '  WARN V3停车记录缺失');
 
+  const { count: unpaidBills } = await supabase.from('bills').select('*', { count: 'exact', head: true }).eq('status', 'unpaid');
+  const { count: activeQueueEntries } = await supabase.from('queue_entries').select('*', { count: 'exact', head: true }).in('status', ['waiting', 'ready', 'charging']);
   const stRes = await get(`${API}/monitor/stations`);
   const stations = (stRes.stations || stRes || []);
   console.log(`\nStations: ${stations.map((s:any)=>`${s.station_number||s.stationNumber}=${s.status}`).join(' ')}`);
   console.log(`Departed:${departed} Paid:${paid} V3Parked:${v3Parked}`);
+  console.log(`Checks: UnpaidBills:${unpaidBills || 0} ActiveQueueEntries:${activeQueueEntries || 0}`);
   console.log('Done');
 }
 

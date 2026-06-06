@@ -2,10 +2,10 @@ import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  let response = NextResponse.next({ request });
+  const response = NextResponse.next({ request });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -29,7 +29,6 @@ export async function middleware(request: NextRequest) {
 
   if (pathname.startsWith('/api/')) {
     if (pathname.startsWith('/api/auth/')) return NextResponse.next();
-    // Service key 绕过认证，供服务端脚本使用
     if (request.headers.get('x-service-key') === process.env.SUPABASE_SERVICE_ROLE_KEY) {
       return response;
     }

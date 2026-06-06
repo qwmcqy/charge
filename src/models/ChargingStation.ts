@@ -192,6 +192,7 @@ export class ChargingStation {
       .select('*')
       .eq('mode', mode)
       .eq('status', 'available')
+      .order('station_number', { ascending: true })
       .limit(1)
       .maybeSingle();
 
