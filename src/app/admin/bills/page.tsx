@@ -15,6 +15,8 @@ interface BillRow {
   generated_at: string;
   energy_consumed: number;
   charging_duration_minutes: number;
+  parking_duration_minutes: number;
+  overtime_minutes: number;
   rate_per_kwh: number;
   charge_mode: string;
 }
@@ -39,6 +41,39 @@ export default function AdminBillsPage() {
   }, []);
 
   useEffect(() => { loadBills(); }, [loadBills]);
+
+  function exportCSV() {
+    const header = [
+      '账单ID', '用户', '车牌号', '充电量(kWh)', '充电时长(分)',
+      '停车时长(分)', '超时(分)', '计费规则', '充电费', '停车费', '合计', '状态', '生成时间', '支付时间',
+    ];
+    const rows = bills.map(b => [
+      b.id,
+      b.user_name,
+      b.user_plate,
+      b.energy_consumed.toFixed(2),
+      b.charging_duration_minutes,
+      b.parking_duration_minutes || 0,
+      b.overtime_minutes || 0,
+      `${b.charge_mode === 'fast' ? '快充' : '慢充'} ¥${b.rate_per_kwh}/kWh`,
+      b.charging_fee.toFixed(2),
+      b.parking_fee.toFixed(2),
+      b.total_amount.toFixed(2),
+      b.status === 'paid' ? '已支付' : '待支付',
+      b.generated_at ? new Date(b.generated_at).toLocaleString('zh-CN') : '',
+      (b as any).paid_at ? new Date((b as any).paid_at).toLocaleString('zh-CN') : '',
+    ]);
+    const csv = [header, ...rows]
+      .map(row => row.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `账单明细_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   async function verifyBill(billId: string) {
     try {
@@ -96,6 +131,13 @@ export default function AdminBillsPage() {
         </div>
       </div>
 
+      <div className="flex justify-end mb-3">
+        <button onClick={exportCSV} disabled={bills.length === 0}
+          className="px-4 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 transition">
+          📥 导出 CSV
+        </button>
+      </div>
+
       {bills.length === 0 ? (
         <div className="bg-white rounded-xl shadow p-8 text-center text-gray-400">暂无账单记录</div>
       ) : (
@@ -131,10 +173,15 @@ export default function AdminBillsPage() {
                     <span className="font-semibold text-blue-700">{bill.energy_consumed.toFixed(2)}</span>
                     <span className="text-gray-400 ml-1">kWh</span>
                   </td>
-                  <td className="p-4">
-                    {bill.charging_duration_minutes >= 60
+                  <td className="p-4 text-xs">
+                    <div>⚡ {bill.charging_duration_minutes >= 60
                       ? `${Math.floor(bill.charging_duration_minutes / 60)}h${bill.charging_duration_minutes % 60}m`
-                      : `${bill.charging_duration_minutes}分`}
+                      : `${bill.charging_duration_minutes}分`}</div>
+                    {bill.parking_duration_minutes > 0 && (
+                      <div className="text-orange-500">🅿️ {bill.parking_duration_minutes}分
+                        {bill.overtime_minutes > 0 && <span>（超{bill.overtime_minutes}分）</span>}
+                      </div>
+                    )}
                   </td>
                   <td className="p-4 text-xs">
                     <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">

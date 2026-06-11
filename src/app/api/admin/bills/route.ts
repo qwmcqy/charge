@@ -19,16 +19,34 @@ export async function GET(_request: NextRequest) {
 
     const ordersMap = new Map((orders || []).map((o: any) => [o.id, o]));
 
+    const { data: parkings } = await supabase
+      .from('parking_fee_orders')
+      .select('*')
+      .in('charging_order_id', orderIds);
+    const parkingMap = new Map((parkings || []).map((p: any) => [p.charging_order_id, p]));
+
     const bills = (rawBills || []).map((b: any) => {
       const order = ordersMap.get(b.charging_order_id);
+      const parking = parkingMap.get(b.charging_order_id);
       const mode = order?.mode || 'fast';
       const ratePerKwh = mode === 'fast' ? 1.2 : 0.8;
 
-      let duration = 0;
+      let chargingDuration = 0;
       if (order?.start_time && order?.end_time) {
-        duration = Math.round(
+        chargingDuration = Math.round(
           (new Date(order.end_time).getTime() - new Date(order.start_time).getTime()) / 60000
         );
+      }
+
+      let parkingDuration = 0;
+      let overtimeMinutes = 0;
+      if (parking?.charge_complete_time && parking?.depart_time) {
+        parkingDuration = Math.round(
+          (new Date(parking.depart_time).getTime() - new Date(parking.charge_complete_time).getTime()) / 60000
+        );
+      }
+      if (parking?.overtime_minutes) {
+        overtimeMinutes = parking.overtime_minutes;
       }
 
       return {
@@ -43,7 +61,9 @@ export async function GET(_request: NextRequest) {
         generated_at: b.generated_at,
         paid_at: b.paid_at,
         energy_consumed: order?.energy_consumed || 0,
-        charging_duration_minutes: duration,
+        charging_duration_minutes: chargingDuration,
+        parking_duration_minutes: parkingDuration,
+        overtime_minutes: overtimeMinutes,
         rate_per_kwh: ratePerKwh,
         charge_mode: mode,
       };
