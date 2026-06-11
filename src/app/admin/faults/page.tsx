@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase';
 
 const typeLabels: Record<string, string> = {
@@ -13,8 +13,27 @@ const severityLabels: Record<string, string> = {
   minor: '一般', major: '重要', critical: '严重',
 };
 
+type FaultRecord = {
+  id: string;
+  station_id: string;
+  type: string;
+  severity: string;
+  description: string;
+  detected_at: string;
+  resolved_at?: string | null;
+  resolution?: string | null;
+  charging_stations?: {
+    station_number?: string | null;
+    location?: string | null;
+  } | null;
+};
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '未知错误';
+}
+
 export default function FaultsPage() {
-  const [faults, setFaults] = useState<any[]>([]);
+  const [faults, setFaults] = useState<FaultRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'open' | 'resolved'>('all');
   const [message, setMessage] = useState('');
@@ -22,20 +41,34 @@ export default function FaultsPage() {
   const [resolution, setResolution] = useState('');
   const [processing, setProcessing] = useState(false);
 
-  useEffect(() => { loadFaults(); }, []);
+  async function parseApiResponse(res: Response) {
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return res.json();
+    }
 
-  async function loadFaults() {
+    return {
+      error: `接口返回非 JSON 响应 (${res.status})`,
+    };
+  }
+
+  const loadFaults = useCallback(async () => {
     try {
       const res = await fetch('/api/admin/faults');
       if (!res.ok) throw new Error('API error');
-      const data = await res.json();
+      const data = await res.json() as FaultRecord[];
       setFaults(data || []);
     } catch {
       // unavailable
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadFaults(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadFaults]);
 
   async function handleFault(id: string) {
     if (!resolution.trim()) return;
@@ -45,13 +78,13 @@ export default function FaultsPage() {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
 
-      const res = await fetch(`/api/admin/faults/${id}/handle`, {
+      const res = await fetch('/api/admin/faults', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminId: user?.id, resolution: resolution.trim() }),
+        body: JSON.stringify({ faultId: id, adminId: user?.id, resolution: resolution.trim() }),
       });
 
-      const result = await res.json();
+      const result = await parseApiResponse(res);
       if (!res.ok) throw new Error(result.error || '处理失败');
 
       setFaults(prev => prev.map(f => f.id === id ? { ...f, resolved_at: new Date().toISOString(), resolution: resolution.trim() } : f));
@@ -59,8 +92,8 @@ export default function FaultsPage() {
       setResolution('');
       setMessage('故障已处理');
       setTimeout(() => setMessage(''), 3000);
-    } catch (err: any) {
-      setMessage('处理失败: ' + err.message);
+    } catch (err) {
+      setMessage('处理失败: ' + getErrorMessage(err));
     } finally {
       setProcessing(false);
     }
