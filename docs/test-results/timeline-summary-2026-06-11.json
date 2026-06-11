@@ -1,0 +1,89 @@
+{
+  "test": "scripts/timeline-test.ts",
+  "runDate": "2026-06-11",
+  "finalOutput": {
+    "stations": {
+      "F-001": "available",
+      "F-002": "available",
+      "F-003": "fault",
+      "S-001": "fault",
+      "S-002": "available"
+    },
+    "departed": 25,
+    "paid": 25,
+    "v3Parked": true,
+    "unpaidBills": 0,
+    "activeQueueEntries": 0
+  },
+  "directChargingOrder": [
+    "V1",
+    "V2",
+    "V3",
+    "V4"
+  ],
+  "queueOrder": [
+    "V5",
+    "V1故障优先",
+    "V6",
+    "V4故障优先",
+    "V7",
+    "V8",
+    "V9",
+    "V10",
+    "V11",
+    "V12",
+    "V13",
+    "V14",
+    "V15",
+    "V16",
+    "V17",
+    "V18",
+    "V19",
+    "V20",
+    "V21",
+    "V22",
+    "V23",
+    "V24",
+    "V25",
+    "V26",
+    "V27",
+    "V28"
+  ],
+  "cancelResults": {
+    "V2": "取消失败，预期行为",
+    "V7": "取消成功",
+    "V11": "取消成功"
+  },
+  "paymentOrder": [
+    "V25",
+    "V21",
+    "V19",
+    "V18",
+    "V2",
+    "V27",
+    "V20",
+    "V9",
+    "V23",
+    "V22",
+    "V5",
+    "V24",
+    "V14",
+    "V26",
+    "V6",
+    "V17",
+    "V28",
+    "V15",
+    "V4",
+    "V10",
+    "V8",
+    "V1",
+    "V16",
+    "V12",
+    "V13"
+  ],
+  "notes": [
+    "V3 保持 parked 状态用于停车费演示，不进入结算顺序。",
+    "完整标准输出见 docs/test-results/timeline-test-2026-06-11.log。",
+    "本摘要已脱敏，不包含订单 UUID、用户邮箱或数据库主键。"
+  ]
+}
